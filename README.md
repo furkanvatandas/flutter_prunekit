@@ -168,6 +168,19 @@ Enums: 1
   Analysis time: 2.1s
 ```
 
+### Programmatic Usage
+
+Prefer to drive the analyzer from Dart code? Check out `example/basic_usage.dart`
+for a minimal script that wires together the public APIs to scan any project
+directory. Running it without arguments analyzes the bundled sample project:
+
+```bash
+dart run example/basic_usage.dart
+```
+
+This points the analyzer at `example/sample_project`, which deliberately contains
+unused classes, mixins, enums, and extensions so you can see the tool in action.
+
 ## 📖 Usage Guide
 
 ### Common Scenarios

@@ -1,0 +1,7 @@
+name: sample_prunekit_project
+description: Sample project demonstrating flutter_prunekit usage.
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  path: ^1.9.1
