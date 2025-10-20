@@ -1,0 +1,72 @@
+# Example configuration for flutter_dead_code
+# Copy this file to flutter_dead_code.yaml in your project root
+
+# Patterns to exclude from analysis
+# Supports glob patterns (**, *, ?)
+exclude:
+  # Legacy code pending migration
+  - 'lib/legacy/**'
+  
+  # Experimental features not yet integrated
+  - 'lib/experimental/**'
+  - '**/experimental_*.dart'
+  
+  # Generated code (usually auto-excluded, but can be explicit)
+  - '**/*.g.dart'
+  - '**/*.freezed.dart'
+  - '**/*.gr.dart'
+  
+  # Platform-specific code that may not be used in all builds
+  - 'lib/platform/web/**'
+  - 'lib/platform/desktop/**'
+  
+  # Third-party code or vendored libraries
+  - 'lib/vendor/**'
+  
+  # Deprecated code scheduled for removal
+  - '**/deprecated_*.dart'
+  - 'lib/deprecated/**'
+
+# Custom annotations to treat as "keep unused" directives
+# Classes with these annotations will never be reported as unused
+ignore_annotations:
+  # Standard annotation (always recognized)
+  - 'keepUnused'
+  
+  # Common custom annotations you might use
+  - 'deprecated'        # Classes marked deprecated but kept for compatibility
+  - 'experimental'      # Experimental APIs not yet stable
+  - 'internal'          # Internal APIs not meant for external use
+  - 'visibleForTesting' # Test-only classes
+  - 'doNotRemove'       # Custom marker annotation
+
+# Examples of patterns you can use:
+#
+# Single file:
+#   - 'lib/models/old_user.dart'
+#
+# All files in a directory:
+#   - 'lib/widgets/legacy/**'
+#
+# All files matching a pattern:
+#   - '**/temp_*.dart'
+#   - '**/*_old.dart'
+#
+# Multiple directories:
+#   - 'lib/a/**'
+#   - 'lib/b/**'
+#   - 'packages/*/lib/internal/**'
+#
+# File extensions:
+#   - '**/*.generated.dart'
+#   - '**/*.mocks.dart'
+
+# NOTE: This config file has MEDIUM priority in the ignore hierarchy:
+# 1. @keepUnused annotation (HIGHEST - always wins)
+# 2. flutter_dead_code.yaml config file (MEDIUM - this file)
+# 3. --exclude CLI flag (LOWEST - can be overridden by above)
+#
+# For temporary exclusions, prefer CLI flags:
+#   dart run flutter_dead_code --exclude 'lib/temp/**'
+#
+# For permanent exclusions, use this config file or annotations

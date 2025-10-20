@@ -1,0 +1,77 @@
+import 'dart:io';
+import 'package:yaml/yaml.dart';
+import '../models/ignore_pattern.dart';
+
+/// Reads and parses flutter_prunekit.yaml configuration files.
+///
+/// Supports ignore patterns and other configuration options.
+class AnalyzerConfigReader {
+  /// The default config filename to look for.
+  static const String defaultConfigFilename = 'flutter_prunekit.yaml';
+
+  /// Reads the configuration from a project directory.
+  ///
+  /// Returns null if no configuration file exists.
+  static Future<AnalyzerConfig?> read(String projectRoot) async {
+    final configPath = '$projectRoot/$defaultConfigFilename';
+    final configFile = File(configPath);
+
+    if (!await configFile.exists()) {
+      return null;
+    }
+
+    try {
+      final contents = await configFile.readAsString();
+      final yaml = loadYaml(contents) as Map<dynamic, dynamic>?;
+
+      if (yaml == null) {
+        return null;
+      }
+
+      return AnalyzerConfig(
+        ignoreAnnotations: _parseIgnoreAnnotations(yaml),
+        excludePatterns: _parseExcludePatterns(yaml),
+      );
+    } catch (e) {
+      // Invalid YAML or other errors - return null
+      return null;
+    }
+  }
+
+  static List<String> _parseIgnoreAnnotations(Map<dynamic, dynamic> yaml) {
+    final annotations = yaml['ignore_annotations'];
+    if (annotations is List) {
+      return annotations.map((a) => a.toString()).toList();
+    }
+    return [];
+  }
+
+  static List<IgnorePattern> _parseExcludePatterns(Map<dynamic, dynamic> yaml) {
+    final excludes = yaml['exclude'];
+    if (excludes is List) {
+      return excludes
+          .map((pattern) => IgnorePattern(
+                pattern: pattern.toString(),
+                source: IgnoreSource.configFile,
+              ))
+          .toList();
+    }
+    return [];
+  }
+}
+
+/// Parsed configuration from flutter_prunekit.yaml
+class AnalyzerConfig {
+  /// List of annotation names to treat as ignore markers.
+  ///
+  /// Example: ['keepUnused', 'dead_code_ignore', 'preserve']
+  final List<String> ignoreAnnotations;
+
+  /// List of glob patterns to exclude from analysis.
+  final List<IgnorePattern> excludePatterns;
+
+  AnalyzerConfig({
+    required this.ignoreAnnotations,
+    required this.excludePatterns,
+  });
+}
