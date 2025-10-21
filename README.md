@@ -1,4 +1,8 @@
-# flutter_prunekit
+<p align="center">
+  <img src="assets/prunekit_image.png" alt="Flutter PruneKit" width="100%" >
+</p>
+
+---
 
 🎯 **Find and eliminate dead code in your Dart & Flutter projects**
 
@@ -9,8 +13,6 @@
 
 **Blazing-fast • 100% Accurate • Zero Config**
 
----
-
 ## 🚀 Why flutter_prunekit?
 
 Dead code bloats your app, confuses developers, and slows down builds. **flutter_prunekit** uses advanced static analysis to find unused classes, enums, mixins, and extensions—so you can ship faster, cleaner code.
@@ -19,7 +21,7 @@ Dead code bloats your app, confuses developers, and slows down builds. **flutter
 
 ```dart
 // Somewhere in your codebase...
-class OldUserWidget extends StatelessWidget { ... }  // ❌ Unused for 6 months
+class OldUserWidget extends StatelessWidget { ... }   // ❌ Unused for 6 months
 class DeprecatedHelper { ... }                        // ❌ Nobody uses this
 enum LegacyStatus { active, inactive }                // ❌ Dead code
 ```
@@ -552,5 +554,3 @@ If `flutter_prunekit` helped clean up your codebase, consider:
 - ⭐ Starring the repo
 - 🐦 Sharing on social media
 - 📝 Writing a blog post about it
-
-Every contribution helps make Flutter development better for everyone!

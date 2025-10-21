@@ -69,12 +69,6 @@ ignore_annotations:
   - 'experimental'
 ```
 
-### Exit Codes
-
-- **0** - No unused code found
-- **1** - Unused code detected
-- **2** - Analysis errors/warnings
-
 ### Quality Metrics
 
 | Metric | Result |
@@ -89,14 +83,6 @@ ignore_annotations:
 - Classes used via `dynamic` may not be tracked (warning issued)
 - Reflection/mirrors not detected
 - Platform-specific imports may need `@keepUnused`
-
-### Dependencies
-
-- `analyzer: ^8.4.0` - Dart AST parsing
-- `args: ^2.7.0` - CLI parsing
-- `glob: ^2.1.3` - Pattern matching
-- `path: ^1.9.1` - Path handling
-- `yaml: ^3.1.3` - Config parsing
 
 ---
 
