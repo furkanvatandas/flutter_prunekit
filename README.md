@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/prunekit_image.png" alt="Flutter PruneKit" width="100%" >
+  <img src="https://github.com/furkanvatandas/flutter_prunekit/blob/main/assets/prunekit_image.png?raw=true" alt="Flutter PruneKit" width="100%" >
 </p>
 
 ---
