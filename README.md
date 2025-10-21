@@ -111,7 +111,7 @@ Or manually add to `pubspec.yaml`:
 
 ```yaml
 dev_dependencies:
-  flutter_prunekit: ^1.1.0
+  flutter_prunekit: ^1.1.1
 ```
 
 Then run:
