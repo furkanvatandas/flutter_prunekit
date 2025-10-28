@@ -103,6 +103,8 @@ Future<int> run(List<String> args) async {
     final ignorePatterns = <IgnorePattern>[
       // Config file patterns (priority 2)
       ...?analyzerConfig?.excludePatterns,
+      // T065: Add method-level ignore patterns from config
+      ...?analyzerConfig?.ignoreMethodPatterns,
       // CLI flag patterns (priority 1 - lowest)
       ...arguments.excludePatterns.map((pattern) => IgnorePattern(
             pattern: pattern,
@@ -144,22 +146,43 @@ Future<int> run(List<String> args) async {
       print('Successfully analyzed ${fileResults.length} files');
     }
 
-    // Build reference graph
+    // Build reference graph (T033: now includes override detection)
     final tracker = ReferenceTracker();
-    final graph = tracker.buildGraph(fileResults);
+    final graph = await tracker.buildGraph(fileResults);
 
-    // Detect unused classes
-    final detector = UnusedDetector(ignorePatterns: ignorePatterns);
+    // Detect unused classes and methods with shared detector
+    final detector = UnusedDetector(
+      ignorePatterns: ignorePatterns,
+      verbose: arguments.verbose && !arguments.quiet, // T066: Pass verbose flag
+    );
+
+    // T066: Print verbose diagnostic header (only once)
+    if (!arguments.quiet && arguments.verbose) {
+      print('\n─── Ignore Pattern Diagnostics ───');
+    }
+
     final unusedClasses = detector.findUnused(graph);
+    final unusedMethods = detector.findUnusedMethods(graph);
+
+    if (!arguments.quiet && arguments.verbose) {
+      print('─────────────────────────────────\n');
+    }
 
     // Get scanner statistics
     final scanStats = await scanner.getStatistics();
 
-    // Get unused detection statistics
-    final unusedStats = detector.getStatistics(graph);
+    // Get unused detection statistics (T066: pass cached results to avoid re-running verbose logging)
+    final unusedStats = detector.getStatisticsWithCachedResults(
+      graph,
+      unusedClasses,
+      unusedMethods,
+    );
 
     // Calculate duration
     final duration = DateTime.now().difference(startTime);
+
+    // Get statistics (T092: needed for dynamic warning check)
+    final stats = graph.getStatistics();
 
     // Collect all warnings from analysis
     final allWarnings = <AnalysisWarning>[
@@ -167,12 +190,26 @@ Future<int> run(List<String> args) async {
       ...tracker.warnings,
     ];
 
-    // Create report
-    final stats = graph.getStatistics();
+    // T092: Add dynamic invocation warning if threshold exceeded
+    if (stats.hasDynamicWarning) {
+      allWarnings.add(
+        AnalysisWarning(
+          type: WarningType.highDynamicUsage,
+          message: 'High dynamic method invocation rate detected: '
+              '${stats.dynamicInvocationPercentage.toStringAsFixed(1)}% '
+              '(${stats.dynamicInvocationCount}/${stats.totalMethodInvocations} calls). '
+              'Consider adding type annotations to improve static analysis precision and reduce false negatives.',
+          isFatal: false,
+        ),
+      );
+    }
+
+    // Create report (T035: includes unused methods)
     final report = AnalysisReport(
-      version: '1.0.0',
+      version: '2.0.0',
       timestamp: DateTime.now().toIso8601String(),
-      unusedClasses: unusedClasses,
+      unusedClasses: arguments.onlyMethods ? [] : unusedClasses, // Skip classes if --only-methods
+      unusedMethods: unusedMethods, // T035: Add method reporting
       summary: AnalysisSummary(
         totalFiles: filesToAnalyze.length,
         totalClasses: stats.totalDeclarations,
@@ -183,6 +220,8 @@ Future<int> run(List<String> args) async {
         filesExcludedByIgnorePatterns: scanStats.excludedByPattern,
         classesExplicitlyIgnored: unusedStats.ignoredByAnnotation + unusedStats.ignoredByPattern,
         durationMs: duration.inMilliseconds,
+        totalMethods: graph.methodDeclarations.length, // T035
+        unusedMethodCount: unusedMethods.length, // T035
       ),
       warnings: allWarnings,
     );
@@ -191,6 +230,8 @@ Future<int> run(List<String> args) async {
     final output = OutputFormatter.format(
       report,
       quiet: arguments.quiet,
+      onlyMethods: arguments.onlyMethods, // Pass flag to formatter
+      asJson: arguments.json,
     );
     print(output);
 

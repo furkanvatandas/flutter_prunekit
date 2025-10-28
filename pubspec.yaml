@@ -1,6 +1,6 @@
 name: flutter_prunekit
 description: Blazing-fast static analyzer for detecting unused classes, enums, mixins & extensions in Dart/Flutter. 100% precision, zero false positives.
-version: 1.1.1
+version: 2.0.0
 homepage: https://github.com/furkanvatandas/flutter_prunekit
 repository: https://github.com/furkanvatandas/flutter_prunekit
 issue_tracker: https://github.com/furkanvatandas/flutter_prunekit/issues

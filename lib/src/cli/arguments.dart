@@ -29,6 +29,12 @@ class Arguments {
   /// Whether to show version.
   final bool version;
 
+  /// Whether to analyze only methods (not classes).
+  final bool onlyMethods;
+
+  /// Whether to output the report in JSON format.
+  final bool json;
+
   Arguments({
     required this.paths,
     required this.excludePatterns,
@@ -39,6 +45,8 @@ class Arguments {
     required this.verbose,
     required this.help,
     required this.version,
+    required this.onlyMethods,
+    required this.json,
   });
 
   /// Parses command-line arguments.
@@ -74,6 +82,8 @@ class Arguments {
         verbose: results.flag('verbose'),
         help: results.flag('help'),
         version: results.flag('version'),
+        onlyMethods: results.flag('only-methods'),
+        json: results.flag('json'),
       );
     } on FormatException {
       return null;
@@ -132,6 +142,16 @@ class Arguments {
         'version',
         negatable: false,
         help: 'Show version information',
+      )
+      ..addFlag(
+        'only-methods',
+        negatable: false,
+        help: 'Analyze only methods/functions (not classes)',
+      )
+      ..addFlag(
+        'json',
+        negatable: false,
+        help: 'Output report in JSON format',
       );
   }
 
@@ -160,6 +180,6 @@ Examples:
 
   /// Gets the version string.
   static String getVersion() {
-    return 'flutter_prunekit version 1.0.0';
+    return 'flutter_prunekit version 2.0.0';
   }
 }

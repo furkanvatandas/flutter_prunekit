@@ -31,6 +31,7 @@ class AnalyzerConfigReader {
       return AnalyzerConfig(
         ignoreAnnotations: _parseIgnoreAnnotations(yaml),
         excludePatterns: _parseExcludePatterns(yaml),
+        ignoreMethodPatterns: _parseIgnoreMethodPatterns(yaml), // T064: Parse ignore_methods section
       );
     } catch (e) {
       // Invalid YAML or other errors - return null
@@ -58,6 +59,21 @@ class AnalyzerConfigReader {
     }
     return [];
   }
+
+  // T064: Parse ignore_methods section for method-level patterns
+  static List<IgnorePattern> _parseIgnoreMethodPatterns(Map<dynamic, dynamic> yaml) {
+    final ignoreMethods = yaml['ignore_methods'];
+    if (ignoreMethods is List) {
+      return ignoreMethods
+          .map((pattern) => IgnorePattern(
+                pattern: pattern.toString(),
+                source: IgnoreSource.configFile,
+                type: IgnorePatternType.method, // T063: Mark as method pattern
+              ))
+          .toList();
+    }
+    return [];
+  }
 }
 
 /// Parsed configuration from flutter_prunekit.yaml
@@ -70,8 +86,14 @@ class AnalyzerConfig {
   /// List of glob patterns to exclude from analysis.
   final List<IgnorePattern> excludePatterns;
 
+  /// List of method-level ignore patterns (T064).
+  ///
+  /// Example: ['test*', '_internal*', 'TestHelper.*', '*.cleanup']
+  final List<IgnorePattern> ignoreMethodPatterns;
+
   AnalyzerConfig({
     required this.ignoreAnnotations,
     required this.excludePatterns,
+    this.ignoreMethodPatterns = const [], // T064: Default to empty list
   });
 }

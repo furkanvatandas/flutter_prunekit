@@ -41,7 +41,7 @@ Future<void> main(List<String> args) async {
   final analysisResults = await astAnalyzer.analyzeFiles(dartFiles);
 
   final tracker = ReferenceTracker();
-  final referenceGraph = tracker.buildGraph(analysisResults);
+  final referenceGraph = await tracker.buildGraph(analysisResults);
 
   final detector = UnusedDetector();
   final unusedDeclarations = detector.findUnused(referenceGraph);

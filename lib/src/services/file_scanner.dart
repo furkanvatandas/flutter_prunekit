@@ -144,6 +144,7 @@ class FileScanner {
     final allDartFiles = <String>[];
     final excludedFiles = <String>[];
     final generatedFiles = <String>[];
+    final testFiles = <String>[];
 
     final searchPath = p.join(rootPath, 'lib');
     final searchDir = Directory(searchPath);
@@ -171,6 +172,17 @@ class FileScanner {
       }
     }
 
+    // Count test files in test/ directory if it exists
+    final testPath = p.join(rootPath, 'test');
+    final testDir = Directory(testPath);
+    if (await testDir.exists()) {
+      await for (final entity in testDir.list(recursive: true)) {
+        if (entity is File && PathUtils.isDartFile(entity.path)) {
+          testFiles.add(PathUtils.normalize(entity.path));
+        }
+      }
+    }
+
     final scannedFiles = await scan();
 
     return ScanStatistics(
@@ -178,7 +190,7 @@ class FileScanner {
       includedFiles: scannedFiles.length,
       excludedByPattern: excludedFiles.length,
       excludedAsGenerated: generatedFiles.length,
-      excludedAsTest: 0,
+      excludedAsTest: testFiles.length,
     );
   }
 }

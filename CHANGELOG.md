@@ -2,8 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [2.0.0]
+
+### Added - Method Detection
+
+**Complete method and function analysis** - The biggest feature since v1.0!
+
+#### What's New
+
+- **Top-level Functions** - Detects unused global functions
+- **Instance Methods** - Tracks method usage including inherited calls (classes and enums)
+- **Static Methods** - Factory constructors and static method detection (classes and enums)
+- **Extension Methods** - Full extension method tracking with semantic resolution
+- **Getters & Setters** - Property accessor detection (top-level, class-level, and enum-level)
+- **Operators** - Overloaded operator tracking (`+`, `==`, `[]`, etc.)
+- **Private Methods** - Unused private method detection
+- **Override Detection** - Correctly handles `@override` and inheritance chains
+- **Abstract Methods** - Smart handling of abstract methods with implementations
+- **Lifecycle Methods** - Auto-excludes Flutter lifecycle methods (`initState`, `dispose`, `build`, etc.)
+- **Enum Methods** - Full support for enum instance methods, static methods, getters, and setters
+
+### Fixed
+
+- Singleton property access (e.g., `Logger.instance.log()`) now correctly tracked
+- Inherited method calls via implicit `this` properly detected
+- Abstract methods with `@override` implementations not flagged
+- Property chains across inheritance hierarchies resolved correctly
+
+---
 
 ## [1.1.1]
 
@@ -20,11 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Realm `$ClassName` models no longer falsely reported when using `--include-generated`
 - Freezed generated classes correctly detected across part boundaries
 - Generated code in part files properly analyzed
-
-### Performance
-
-- <0.5% regression on part-heavy projects (actually -0.1% improvement with caching)
-- 100% precision and recall maintained
 
 ---
 
@@ -43,70 +64,8 @@ Production-ready dead code analyzer for Dart & Flutter with **100% precision and
 - **Fast:** <5s for 10k LOC, <30s for 50k LOC
 - **Cross-platform:** macOS, Linux, Windows
 
-### CLI Options
-
-```bash
---path <path>              # Paths to analyze (default: lib/)
---exclude <pattern>        # Glob patterns to exclude
---include-tests            # Analyze test files
---include-generated        # Analyze generated code
---ignore-analysis-options  # Skip analysis_options.yaml
---verbose                  # Show detailed progress
---quiet                    # Show results only
-```
-
-### Configuration
-
-Create `flutter_prunekit.yaml`:
-
-```yaml
-exclude:
-  - 'lib/legacy/**'
-  - '**/old_*.dart'
-
-ignore_annotations:
-  - 'deprecated'
-  - 'experimental'
-```
-
-### Quality Metrics
-
-| Metric | Result |
-|--------|--------|
-| Precision | 100% (0 false positives) |
-| Recall | 100% (catches all unused code) |
-| Test Coverage | 86 tests |
-| Memory Usage | <500MB for 100k LOC |
-
-### Known Limitations
-
-- Classes used via `dynamic` may not be tracked (warning issued)
-- Reflection/mirrors not detected
-- Platform-specific imports may need `@keepUnused`
-
 ---
 
-## Installation
-
-```bash
-# Add to project
-dart pub add --dev flutter_prunekit
-
-# Or install globally
-dart pub global activate flutter_prunekit
-```
-
-## Usage
-
-```bash
-# Basic analysis
-dart run flutter_prunekit
-
-# With options
-dart run flutter_prunekit --path lib --exclude 'lib/legacy/**' --verbose
-```
-
----
-
+[2.0.0]: https://github.com/furkanvatandas/flutter_prunekit/releases/tag/v2.0.0
 [1.1.1]: https://github.com/furkanvatandas/flutter_prunekit/releases/tag/v1.1.1
 [1.0.0]: https://github.com/furkanvatandas/flutter_prunekit/releases/tag/v1.0.0

@@ -1,14 +1,20 @@
 import 'package:glob/glob.dart';
 
-/// Represents a pattern for excluding files or classes from analysis.
+/// Represents a pattern for excluding files, classes, or methods from analysis.
 ///
 /// Supports glob patterns like `lib/legacy/**` or `**/old_*.dart`.
+///
+/// **Phase 2 Enhancement (T009)**: Extended to support method-level patterns
+/// (e.g., `ClassName.methodName`, `_private*`, `on*`).
 class IgnorePattern {
   /// The glob pattern string.
   final String pattern;
 
   /// The source of this ignore pattern (for priority resolution).
   final IgnoreSource source;
+
+  /// The type of pattern (file, class, or method) (T009).
+  final IgnorePatternType type;
 
   /// The compiled glob matcher.
   final Glob _glob;
@@ -19,6 +25,7 @@ class IgnorePattern {
   IgnorePattern({
     required this.pattern,
     required this.source,
+    this.type = IgnorePatternType.file,
   }) : _glob = Glob(pattern);
 
   /// Checks if the given file path matches this pattern.
@@ -26,6 +33,41 @@ class IgnorePattern {
   /// Uses normalized paths for consistent matching across platforms.
   bool matches(String filePath) {
     return _glob.matches(filePath);
+  }
+
+  /// Checks if a method name matches this pattern (T009).
+  ///
+  /// For method patterns like:
+  /// - `methodName` - exact match
+  /// - `_private*` - prefix match
+  /// - `on*` - event handler prefix
+  /// - `ClassName.methodName` - fully qualified
+  bool matchesMethod(String methodName, {String? className}) {
+    if (type != IgnorePatternType.method) {
+      return false;
+    }
+
+    // Handle fully qualified patterns (ClassName.methodName)
+    if (pattern.contains('.')) {
+      final parts = pattern.split('.');
+      if (parts.length == 2) {
+        final classPattern = parts[0];
+        final methodPattern = parts[1];
+
+        // Match class name if provided
+        if (className != null) {
+          if (!Glob(classPattern).matches(className)) {
+            return false;
+          }
+        }
+
+        // Match method name
+        return Glob(methodPattern).matches(methodName);
+      }
+    }
+
+    // Simple method name pattern
+    return _glob.matches(methodName);
   }
 
   /// Returns the priority of this pattern source.
@@ -55,6 +97,18 @@ class IgnorePattern {
 
   @override
   String toString() => 'IgnorePattern($pattern, source: ${source.name})';
+}
+
+/// The type of pattern (T009).
+enum IgnorePatternType {
+  /// Pattern matches file paths (e.g., `lib/legacy/**`).
+  file,
+
+  /// Pattern matches class names (e.g., `LegacyWidget`).
+  classPattern,
+
+  /// Pattern matches method names (e.g., `_private*`, `ClassName.methodName`).
+  method,
 }
 
 /// The source of an ignore pattern.

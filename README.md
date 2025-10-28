@@ -2,71 +2,36 @@
   <img src="https://github.com/furkanvatandas/flutter_prunekit/blob/main/assets/prunekit_image.png?raw=true" alt="Flutter PruneKit" width="100%" >
 </p>
 
----
+# flutter_prunekit
 
-🎯 **Find and eliminate dead code in your Dart & Flutter projects**
+🎯 Find and remove dead (unused) code in Dart & Flutter projects — classes, enums, mixins, extensions, methods and more.
 
 [![Pub Version](https://img.shields.io/pub/v/flutter_prunekit.svg)](https://pub.dev/packages/flutter_prunekit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Dart](https://img.shields.io/badge/Dart-3.0%2B-blue.svg)](https://dart.dev/)
 [![Flutter](https://img.shields.io/badge/Flutter-Compatible-02569B.svg)](https://flutter.dev/)
 
-**Blazing-fast • 100% Accurate • Zero Config**
+Short, fast, zero-config static analysis to detect dead code and help keep your codebase small and maintainable.
+
+[Highlights](#-highlights) • [Installation](#-installation) • [Quick Start](#-quick-start) • [Documentation](#-usage-guide)
+
+---
 
 ## 🚀 Why flutter_prunekit?
 
 Dead code bloats your app, confuses developers, and slows down builds. **flutter_prunekit** uses advanced static analysis to find unused classes, enums, mixins, and extensions—so you can ship faster, cleaner code.
 
-### The Problem
+## ✨ Highlights
 
-```dart
-// Somewhere in your codebase...
-class OldUserWidget extends StatelessWidget { ... }   // ❌ Unused for 6 months
-class DeprecatedHelper { ... }                        // ❌ Nobody uses this
-enum LegacyStatus { active, inactive }                // ❌ Dead code
-```
+- 🎯 High precision results backed by 370+ automated tests and production pilots (last validated Oct 2024).
+- ⚡ Analysis finishes in seconds for medium Flutter apps thanks to parallel AST traversal.
+- 🧠 Understands modern Dart features: extensions, mixins, part files, generics, override chains.
+- 🛠️ Zero-config defaults with flexible ignore annotations, config, and glob patterns.
+- 🌍 Offline CLI that runs on macOS, Linux, and Windows with no external services.
 
-### The Solution
+## 🔍 What it Detects
 
-```bash
-$ dart run flutter_prunekit
-
-═══ Flutter Dead Code Analysis ═══
-
-⚠ Found 3 unused declaration(s):
-
-Classes: 2
-
-  lib/models/old_user.dart:12
-    OldUser
-  lib/models/deprecated.dart:5
-    DeprecatedHelper
-
-Enums: 1
-
-  lib/utils/deprecated_helper.dart:8
-    LegacyStatus
-    
-
-✨ Remove these to save ~500 lines of code!
-```
-
-## ✨ Key Benefits
-
-| Benefit | Impact |
-|---------|--------|
-| 🎯 **100% Precision** | Zero false positives - every result is real dead code |
-| ⚡ **Lightning Fast** | Analyze 10k LOC in 3-4 seconds |
-| 🧹 **Clean Codebase** | Remove technical debt systematically |
-| 📦 **Smaller Apps** | Reduce bundle size by eliminating unused code |
-| 🔧 **Zero Config** | Works out-of-the-box, customizable when needed |
-| 🌍 **Cross-Platform** | macOS, Linux, Windows support |
-| 🎓 **Smart Analysis** | Understands inheritance, generics, extensions, part files |
-| 🛡️ **Battle-Tested** | 119 passing tests, production-proven |
-
-## ✨ Key Features
-
-### What We Detect (v1.0.0)
+**Classes & Types:**
 
 - ✅ **Classes** - Regular and abstract classes
 - ✅ **Enums** - All enum declarations
@@ -76,23 +41,22 @@ Enums: 1
   - Cross-file extension usage tracking
   - Generic type-parameterized extensions
 
-### Smart Analysis
+**Functions & Methods:** 🆕
 
-- 🎯 **100% Accurate** - Perfect precision and recall in production use
-- ⚡ **Lightning Fast** - 3-4s for 10k LOC projects
-- 🧠 **Semantic Resolution** - Understands inheritance, generics, type checks
-- 📦 **Part File Support** - Full analysis across part boundaries
-- 🔧 **Generated Code Aware** - Auto-excludes `*.g.dart`, `*.freezed.dart`, `*.realm.dart`
-- 🎨 **Flexible Ignore System** - Annotations, patterns, or CLI flags
-- 🌍 **Cross-Platform** - macOS, Linux, Windows tested
+- ✅ **Top-level Functions** - Global function declarations
+- ✅ **Instance Methods** - Class and enum instance methods with override detection
+- ✅ **Static Methods** - Class and enum static methods and factory constructors
+- ✅ **Extension Methods** - Methods on extension types
+- ✅ **Getters & Setters** - Property accessors (both top-level, class-level, and enum-level)
+- ✅ **Operators** - Overloaded operators (`+`, `==`, `[]`, etc.)
+- ✅ **Private Methods** - Unused private methods detection
+- ✅ **Lifecycle Methods** - Automatic exclusion of Flutter lifecycle methods (`initState`, `dispose`, etc.)
 
 ### 🚀 Coming Soon (Roadmap)
 
 We're actively working on detecting unused:
 
-- 🔜 **Top-level functions** - Unused global functions
-- 🔜 **Methods** - Unused class methods (instance & static)
-- 🔜 **Fields & Properties** - Unused class fields and getters/setters
+- 🔜 **Fields & Properties** - Unused class fields
 - 🔜 **Variables** - Unused top-level and local variables
 - 🔜 **Type aliases** - Unused typedef declarations
 - 🔜 **Constructor parameters** - Unused named parameters
@@ -111,7 +75,7 @@ Or manually add to `pubspec.yaml`:
 
 ```yaml
 dev_dependencies:
-  flutter_prunekit: ^1.1.1
+  flutter_prunekit: ^2.0.0
 ```
 
 Then run:
@@ -142,12 +106,13 @@ flutter_prunekit
 
 ### Example Output
 
-```
+```text
 ═══ Flutter Dead Code Analysis ═══
 
-⚠ Found 3 unused declaration(s):
+⚠ Found 5 unused declaration(s):
 
 Classes: 2
+Enums: 1
 
   lib/models/old_user.dart:12
     OldUser
@@ -155,19 +120,29 @@ Classes: 2
   lib/widgets/legacy_button.dart:8
     LegacyButton
 
-Enums: 1
-
   lib/utils/deprecated_helper.dart:5
     DeprecatedStatus
+
+Top-Level Functions: 1
+
+  lib/helpers/formatter.dart:45
+    formatLegacyData
+
+Instance Methods: 1
+
+  UserService (lib/services/user_service.dart:23)
+    processLegacyUser [instance]
 
 ─── Summary ───
 
   Files analyzed: 156
   Total declarations: 89
-  Unused: 3
-  Usage rate: 96.6%
+  Total methods: 234
+  Unused: 5
+  Class usage rate: 96.6%
+  Method usage rate: 99.1%
 
-  Analysis time: 2.1s
+  Analysis time: 2.3s
 ```
 
 ### Programmatic Usage
@@ -183,43 +158,39 @@ dart run example/basic_usage.dart
 This points the analyzer at `example/sample_project`, which deliberately contains
 unused classes, mixins, enums, and extensions so you can see the tool in action.
 
+## 🛠️ CLI Reference
+
+| Flag | Description | Default / Notes |
+|------|-------------|-----------------|
+| `--path <dir>` | Analyze specific directories instead of auto-detecting `lib/`. | Repeatable; accepts globs. |
+| `--exclude <pattern>` | Ignore paths that match a glob (e.g. `lib/legacy/**`). | Evaluated after `--path`. |
+| `--json` | Emit the full analysis report in JSON (matches formatter schema). | Returns both class & method findings unless `--only-methods`. |
+| `--only-methods` | Skip class detection and report methods/functions only. | Useful when classes are already clean. |
+| `--include-tests` | Analyze `test/` alongside `lib/`. | Default is disabled. |
+| `--include-generated` | Opt-in to scanning generated files (e.g. `.g.dart`). | Works with `flutter_prunekit.yaml` excludes. |
+| `--ignore-analysis-options` | Ignore excludes from `analysis_options.yaml`. | Handy for temporary deep scans. |
+| `--quiet` | Suppress banners and summaries; outputs only findings. | Helpful for CI logs. |
+| `--verbose` | Print per-file progress and timing. | Pair with CI to debug slow runs. |
+| `--help` / `-h` | Show the full help text with all options. | Does not run analysis. |
+| `--version` | Print the current package version. | Exits immediately. |
+
 ## 📖 Usage Guide
 
 ### Common Scenarios
 
 ```bash
-# Scan specific directories
-dart run flutter_prunekit --path lib --path packages/core/lib
+# Scope the scan
+dart run flutter_prunekit --path packages/core/lib
 
-# Exclude legacy code from analysis
+# Exclude legacy modules
 dart run flutter_prunekit --exclude 'lib/legacy/**'
 
-# Include test files in analysis
-dart run flutter_prunekit --include-tests
+# Include tests and generated code for a deep audit
+dart run flutter_prunekit --include-tests --include-generated
 
-# Verbose mode - see detailed progress
+# Debug a slow analysis
 dart run flutter_prunekit --verbose
-
-# Quiet mode - only show results
-dart run flutter_prunekit --quiet
-
-# Scan generated code (use carefully!)
-dart run flutter_prunekit --include-generated
 ```
-
-### 🎛️ CLI Options Reference
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `-p, --path <path>` | Path(s) to analyze (can specify multiple times) | `lib/` |
-| `-e, --exclude <pattern>` | Glob pattern(s) to exclude from analysis | - |
-| `--include-tests` | Analyze test files (`test/**`) | `false` |
-| `--include-generated` | Analyze generated files (`*.g.dart`, `*.freezed.dart`, etc.) | `false` |
-| `--ignore-analysis-options` | Don't respect `analysis_options.yaml` excludes | `false` |
-| `-q, --quiet` | Only show final report (suppress progress) | `false` |
-| `-v, --verbose` | Show detailed analysis progress | `false` |
-| `-h, --help` | Display help information | - |
-| `--version` | Show version number | - |
 
 ## ⚙️ Configuration
 
@@ -267,9 +238,9 @@ When multiple ignore methods conflict:
 2. **`flutter_prunekit.yaml` patterns**
 3. **`--exclude` CLI flag** (lowest)
 
-### Option 1: Annotate Specific Classes ⭐ Recommended
+### Option 1: Annotate Specific Classes & Methods ⭐ Recommended
 
-Perfect for individual classes that should never be removed:
+Perfect for individual classes or methods that should never be removed:
 
 ```dart
 @keepUnused  // ← Add this annotation
@@ -289,11 +260,21 @@ enum PlatformStatus { active, inactive }
 extension StringHelpers on String {
   // Extension used in other packages
 }
+
+class Calculator {
+  @keepUnused  // Method-level annotation
+  int complexCalculation() {
+    // Used via reflection or dynamic invocation
+    return 42;
+  }
+  
+  int simpleAdd(int a, int b) => a + b;  // Normal method
+}
 ```
 
 ### Option 2: Pattern-Based Exclusion
 
-Use config file for excluding multiple files:
+Use config file for excluding multiple files or specific methods:
 
 ```yaml
 # flutter_prunekit.yaml
@@ -301,6 +282,14 @@ exclude:
   - 'lib/legacy/**'              # Entire folder
   - '**/experimental_*.dart'     # Name pattern
   - 'lib/platform_specific.dart' # Single file
+
+# Ignore specific methods by pattern
+ignore_methods:
+  - 'test*'                 # Ignore all test helper methods
+  - '_internal*'            # Ignore internal methods
+  - 'TestHelper.*'          # Ignore all TestHelper methods
+  - '*.cleanup'             # Ignore cleanup in any class
+  - 'debugPrint'            # Ignore specific method
 ```
 
 ### Option 3: Runtime Exclusion (Temporary)
@@ -311,100 +300,6 @@ Use CLI flags for one-off analyses:
 # Test excluding certain code
 dart run flutter_prunekit --exclude 'lib/legacy/**' --exclude '**/old_*.dart'
 ```
-
-## 🔄 Exit Codes (Automation-Friendly)
-
-Perfect for integrating into your build pipeline:
-
-| Exit Code | Meaning | Use Case |
-|-----------|---------|----------|
-| **0** | ✅ No unused code found | Pass - codebase is clean |
-| **1** | ⚠️ Unused code detected | Warning - review before deployment |
-| **2** | ❌ Analysis errors/warnings | Fail - syntax errors or config issues |
-
-### Integration Examples
-
-```bash
-# Fail build if unused code is found
-dart run flutter_prunekit || exit 1
-
-# Warning only (don't fail build)
-dart run flutter_prunekit || echo "⚠️ Unused code detected"
-
-# Save results to file
-dart run flutter_prunekit > dead_code_report.txt
-```
-
-## 📊 Performance & Accuracy
-
-### Battle-Tested Quality
-
-| Metric | Industry Standard | flutter_prunekit | Validation |
-|--------|-------------------|-------------------|------------|
-| **Precision** | ≥99% | **100%** ✅ | 1000-class test fixture |
-| **Recall** | ≥80% | **100%** ✅ | 100-class recall test |
-| **False Positives** | ≤1% | **0%** ✅ | Production verified |
-| **False Negatives** | ≤20% | **0%** ✅ | Comprehensive test suite |
-
-🎯 **119 passing tests** across 18 test suites covering edge cases, part files, extensions, and real-world scenarios.
-
-### ⚡ Lightning-Fast Analysis
-
-| Project Size | Lines of Code | Analysis Time | Memory Usage |
-|--------------|---------------|---------------|--------------|
-| 🟢 **Small** | <10,000 | ~3-4 seconds | <100 MB |
-| 🟡 **Medium** | 10k-50k | ~15-20 seconds | <200 MB |
-| 🔴 **Large** | 50k-100k | ~35-45 seconds | <500 MB |
-
-**Why so fast?**
-
-- Parallel file processing
-- Optimized AST traversal
-- Smart caching strategies
-- No disk I/O overhead
-
-## 💻 System Requirements
-
-| Component | Requirement | Notes |
-|-----------|------------|-------|
-| **Dart SDK** | ≥3.0.0 <4.0.0 | Works with latest stable Dart |
-| **Platform** | macOS, Linux, Windows | Full cross-platform support |
-| **RAM** | 4GB minimum | 8GB recommended for large projects |
-| **Disk Space** | ~5MB | No cache files created |
-
-**Supported IDEs:**
-
-- VS Code with Dart extension
-- Android Studio / IntelliJ IDEA
-- Any editor with Dart SDK
-
-## 🎓 What Gets Detected
-
-### ✅ Fully Supported (100% Accuracy)
-
-**Basic Usage:**
-
-- ✅ Direct instantiation - `MyClass()`, `const MyClass()`
-- ✅ Type annotations - `MyClass variable`, `List<MyClass>`
-- ✅ Static access - `MyClass.staticMethod()`, `MyClass.constant`
-- ✅ Factory constructors - `MyClass.factoryConstructor()`
-- ✅ Type checks - `obj is MyClass`, `obj as MyClass`
-
-**Advanced Features:**
-
-- ✅ **Inheritance** - `extends`, `implements`, `with`
-- ✅ **Generics** - `Repository<Product>`, nested generics
-- ✅ **Annotations** - `@MyAnnotation`, custom annotations
-- ✅ **Part Files** - Full cross-part reference tracking
-- ✅ **Extensions** - Named/unnamed, methods, getters, operators
-- ✅ **Generic Extensions** - `extension ListExtension<T> on List<T>`
-- ✅ **Cross-File Extensions** - Import/export tracking
-
-**Special Cases:**
-
-- ✅ **Realm Models** - `$MyModel` with `@RealmModel()` annotation
-- ✅ **Freezed Classes** - Generated code in part files
-- ✅ **Generated Code** - Optional `--include-generated` support
 
 ### ⚠️ Known Limitations (Edge Cases)
 
@@ -473,56 +368,6 @@ dart run flutter_prunekit --include-generated
 ⚠️ **Note:** Generated classes may appear unused if only referenced in other generated code. This is usually safe to ignore.
 
 **Best Practice:** Run analysis both with and without `--include-generated` to understand your codebase.
-
-## 💡 Best Practices
-
-### Recommended Workflow
-
-1. **First Run** - Baseline analysis
-
-   ```bash
-   dart run flutter_prunekit
-   ```
-
-2. **Review Results** - Check for false positives
-
-3. **Add Annotations** - Mark intentionally unused code
-
-   ```dart
-   @keepUnused  // Loaded via reflection
-   class PluginRegistry { }
-   ```
-
-4. **Configure Excludes** - Set up `flutter_prunekit.yaml`
-
-5. **Integrate** - Add to your build/test scripts
-
-### Tips for Large Codebases
-
-- Start with `--exclude 'lib/legacy/**'` to focus on active code
-- Use `--verbose` to understand what's being analyzed
-- Run incrementally on changed modules
-- Schedule periodic full scans (e.g., monthly)
-
-### When to Use `@keepUnused`
-
-- ✅ Classes loaded via reflection
-- ✅ Platform-specific implementations
-- ✅ Public API classes (even if unused internally)
-- ✅ Classes used by external packages
-- ✅ Migration/deprecation code
-- ✅ Test fixtures/mocks (if excluding tests)
-
-## 🤝 Contributing
-
-We welcome contributions! Whether it's:
-
-- 🐛 Bug reports
-- 💡 Feature requests
-- 📝 Documentation improvements
-- 🔧 Code contributions
-
-Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ### Development Setup
 
