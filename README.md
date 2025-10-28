@@ -23,7 +23,7 @@ Dead code bloats your app, confuses developers, and slows down builds. **flutter
 
 ## ✨ Highlights
 
-- 🎯 High precision results backed by 370+ automated tests and production pilots (last validated Oct 2024).
+- 🎯 High precision results backed by 370+ automated tests and production pilots
 - ⚡ Analysis finishes in seconds for medium Flutter apps thanks to parallel AST traversal.
 - 🧠 Understands modern Dart features: extensions, mixins, part files, generics, override chains.
 - 🛠️ Zero-config defaults with flexible ignore annotations, config, and glob patterns.
