@@ -5,6 +5,9 @@ import 'package:yaml/yaml.dart';
 ///
 /// Extracts exclude rules and other analyzer settings relevant to dead code detection.
 class AnalysisOptionsReader {
+  /// Creates a reader helper; prefer the static methods for convenience.
+  const AnalysisOptionsReader();
+
   /// Reads the analysis_options.yaml file from the given directory.
   ///
   /// Returns null if the file doesn't exist.

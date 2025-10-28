@@ -20,6 +20,7 @@ class ASTAnalyzer {
   final DartAnalyzerWrapper _analyzer;
   final List<AnalysisWarning> _warnings = [];
 
+  /// Creates an analyzer bound to the provided analyzer wrapper instance.
   ASTAnalyzer(this._analyzer);
 
   /// Get all warnings accumulated during analysis.
@@ -564,7 +565,7 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
     final methodName = node.methodName.name;
     final target = node.target;
     final resolvedElement = node.methodName.element;
-    final declarationFilePath = _getDeclarationFilePath(resolvedElement);
+    // final declarationFilePath = _getDeclarationFilePath(resolvedElement);
 
     // T053: Check if this is an extension method call first
     final extensionElement = ExtensionResolver.resolveExtensionFromMethodCall(node);

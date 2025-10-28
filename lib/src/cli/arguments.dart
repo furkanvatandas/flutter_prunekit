@@ -35,6 +35,7 @@ class Arguments {
   /// Whether to output the report in JSON format.
   final bool json;
 
+  /// Creates the parsed representation of CLI flags for `flutter_prunekit`.
   Arguments({
     required this.paths,
     required this.excludePatterns,

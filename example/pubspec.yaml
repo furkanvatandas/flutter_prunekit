@@ -1,0 +1,11 @@
+name: flutter_prunekit_example
+description: Example application demonstrating flutter_prunekit usage.
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter_prunekit:
+    path: ..
+  path: ^1.8.3

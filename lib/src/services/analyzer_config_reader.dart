@@ -6,6 +6,9 @@ import '../models/ignore_pattern.dart';
 ///
 /// Supports ignore patterns and other configuration options.
 class AnalyzerConfigReader {
+  /// Creates a configuration reader utility; prefer the static helpers.
+  const AnalyzerConfigReader();
+
   /// The default config filename to look for.
   static const String defaultConfigFilename = 'flutter_prunekit.yaml';
 
@@ -91,6 +94,7 @@ class AnalyzerConfig {
   /// Example: ['test*', '_internal*', 'TestHelper.*', '*.cleanup']
   final List<IgnorePattern> ignoreMethodPatterns;
 
+  /// Builds a configuration object using the provided ignore settings.
   AnalyzerConfig({
     required this.ignoreAnnotations,
     required this.excludePatterns,
