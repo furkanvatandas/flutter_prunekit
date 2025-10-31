@@ -29,8 +29,6 @@ The CLI runs fully offline, requires zero configuration to get started, and is b
 - **Flexible ignore strategies** – use `@keepUnused`, config-driven patterns, CLI excludes, or underscores.
 - **Offline & cross-platform** – works on macOS, Linux, and Windows without talking to external services.
 
----
-
 ## 🔍 What It Detects
 
 ### ✅ Classes & Types
@@ -181,8 +179,6 @@ Run `flutter_prunekit --help` to see the full list of options. Highlights:
 | `--quiet` | Reduce console noise | Outputs only findings. |
 | `--verbose` | Per-file diagnostics | Great for CI troubleshooting. |
 
----
-
 ## Configuration
 
 The analyzer respects `analysis_options.yaml` excludes automatically. Additional configuration lives in `flutter_dead_code.yaml` at your project root.
@@ -232,8 +228,6 @@ dart run flutter_prunekit \
   --exclude '**/experimental_*.dart'
 ```
 
----
-
 ## Ignoring Intentional Usages
 
 Some code is meant to look unused (reflection, dynamic calls, DI). Choose the approach that fits best:
@@ -245,8 +239,6 @@ Some code is meant to look unused (reflection, dynamic calls, DI). Choose the ap
 
 Combine these methods when necessary. Verbose mode logs why declarations were ignored to help fine-tune patterns.
 
----
-
 ## Detection Notes & Limitations
 
 - **Override chains** – override detection relies on explicit `@override` annotations. Omitting the annotation may cause false positives.
@@ -254,8 +246,6 @@ Combine these methods when necessary. Verbose mode logs why declarations were ig
 - **Dynamic or reflective access** – analyzer cannot prove usage; mark members with `@keepUnused` when accessed dynamically.
 - **Unnamed extensions** – currently grouped under a synthetic identifier per file. Prefer named extensions for granular reports.
 - **Generated code** – skipped by default. Use `--include-generated` when you want to scan generated outputs.
-
----
 
 ## CI & Automation
 
@@ -269,13 +259,9 @@ Add a script to your workflow to keep dead code out of main branches:
 
 Exit code `1` will fail the job if any unused declarations remain.
 
----
-
 ## Contributing
 
 We welcome feature requests, bug reports, documentation improvements, and pull requests. Please review [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
-
----
 
 ## Support
 
@@ -288,8 +274,6 @@ If `flutter_prunekit` helped clean up your codebase, consider:
 - ⭐ Starring the repo
 - 🐦 Sharing on social media
 - 📝 Writing a blog post about it
-
----
 
 ## License
 
