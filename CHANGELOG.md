@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.1.0]
+
+#### What's New
+
+- **Local variables** – detects unused variables inside functions, methods, getters, and blocks.
+- **Parameters** – tracks unused function, method, constructor, and closure parameters.
+- **Top-level variables** – flags unused globals and constants (including `late` and `const`).
+- **For-loop variables** – monitors loop counters and iterator variables.
+- **Catch variables** – reports unused exception and stack trace bindings.
+- **Pattern bindings** – supports switch/if-case/destructuring patterns from Dart 3.
+- **Write-only detection** – highlights variables that are assigned but never read.
+- **Smart conventions** – honours `_` placeholders, `this.field` initialisers, and other intentional ignores.
+
+#### Variable-Level Features
+
+- **@keepUnused Annotation** - Variable-level ignore support:
+
+  ```dart
+  @keepUnused
+  final config = loadFromReflection();
+  
+  void process() {
+    @keepUnused
+    final secretKey = Platform.environment['SECRET'];
+  }
+  ```
+
+- **Config-based Patterns** - Flexible variable exclusion:
+
+  ```yaml
+  ignore_variables:
+    - 'temp*'      # Ignore temporary variables
+    - 'debug*'     # Ignore debug variables
+    
+  ignore_parameters:
+    - 'context'    # Often required but unused
+    - '_*'         # Intentionally unused
+  ```
+
 ## [2.0.0]
 
 ### Added - Method Detection
@@ -66,6 +105,7 @@ Production-ready dead code analyzer for Dart & Flutter with **100% precision and
 
 ---
 
+[2.1.0]: https://github.com/furkanvatandas/flutter_prunekit/releases/tag/v2.1.0
 [2.0.0]: https://github.com/furkanvatandas/flutter_prunekit/releases/tag/v2.0.0
 [1.1.1]: https://github.com/furkanvatandas/flutter_prunekit/releases/tag/v1.1.1
 [1.0.0]: https://github.com/furkanvatandas/flutter_prunekit/releases/tag/v1.0.0
