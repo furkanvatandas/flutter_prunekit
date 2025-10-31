@@ -160,7 +160,7 @@ class Arguments {
   static String getUsage() {
     final parser = _buildParser();
     return '''
-Detect unused Dart and Flutter classes in your codebase.
+Detect unused Dart and Flutter classes, methods, and variables in your codebase.
 
 Usage: flutter_prunekit [options]
 
@@ -168,8 +168,8 @@ Options:
 ${parser.usage}
 
 Exit Codes:
-  0 - Success, no unused classes found
-  1 - Unused classes detected
+  0 - Success, no unused code found
+  1 - Unused declarations detected
   2 - Partial analysis completed with warnings
 
 Examples:
@@ -181,6 +181,6 @@ Examples:
 
   /// Gets the version string.
   static String getVersion() {
-    return 'flutter_prunekit version 2.0.0';
+    return 'flutter_prunekit version 2.1.0';
   }
 }

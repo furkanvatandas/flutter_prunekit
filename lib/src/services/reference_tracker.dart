@@ -37,6 +37,11 @@ class ReferenceTracker {
         graph.addDeclaration(declaration);
       }
 
+      // Add variable declarations for unused-variable tracking
+      for (final variableDeclaration in fileResult.variableDeclarations) {
+        graph.addVariableDeclaration(variableDeclaration);
+      }
+
       // Track dynamic type usage
       if (fileResult.hasDynamicTypeUsage) {
         filesWithDynamicUsage.add(fileResult.filePath);
@@ -72,6 +77,11 @@ class ReferenceTracker {
       // Add method invocations (T019)
       for (final invocation in fileResult.methodInvocations) {
         graph.addMethodInvocation(invocation);
+      }
+
+      // Add variable references for unused-variable tracking
+      for (final variableReference in fileResult.variableReferences) {
+        graph.addVariableReference(variableReference);
       }
     }
 
@@ -137,6 +147,18 @@ class ReferenceTracker {
           merged.addMethodInvocation(invocation);
         }
       }
+
+      // Merge variable declarations for unused-variable analysis
+      for (final variableDecl in graph.variableDeclarations.values) {
+        merged.addVariableDeclaration(variableDecl);
+      }
+
+      // Merge variable references for unused-variable analysis
+      for (final entry in graph.variableReferences.entries) {
+        for (final variableReference in entry.value) {
+          merged.addVariableReference(variableReference);
+        }
+      }
     }
 
     return merged;
@@ -190,6 +212,22 @@ class ReferenceTracker {
       }
     }
 
+    // Copy variable declarations from files that weren't updated
+    for (final variableDecl in existingGraph.variableDeclarations.values) {
+      if (!filePathsToUpdate.contains(variableDecl.filePath)) {
+        newGraph.addVariableDeclaration(variableDecl);
+      }
+    }
+
+    // Copy variable references from files that weren't updated
+    for (final entry in existingGraph.variableReferences.entries) {
+      for (final variableReference in entry.value) {
+        if (!filePathsToUpdate.contains(variableReference.filePath)) {
+          newGraph.addVariableReference(variableReference);
+        }
+      }
+    }
+
     // Collect method declarations from updated files for override detection (T033)
     final updatedMethodDeclarations = <dynamic>[];
     for (final fileResult in updatedFiles) {
@@ -214,6 +252,14 @@ class ReferenceTracker {
       // Add method invocations (T019)
       for (final invocation in fileResult.methodInvocations) {
         newGraph.addMethodInvocation(invocation);
+      }
+      // Add variable declarations
+      for (final variableDecl in fileResult.variableDeclarations) {
+        newGraph.addVariableDeclaration(variableDecl);
+      }
+      // Add variable references
+      for (final variableReference in fileResult.variableReferences) {
+        newGraph.addVariableReference(variableReference);
       }
     }
 

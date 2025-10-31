@@ -3,6 +3,7 @@ import 'package:glob/glob.dart';
 import 'package:path/path.dart' as p;
 import '../utils/generated_code_detector.dart';
 import '../utils/path_utils.dart';
+import 'analysis_options_reader.dart';
 
 /// Discovers Dart files in a project directory.
 ///
@@ -23,6 +24,12 @@ class FileScanner {
   /// Whether to ignore analysis_options.yaml exclusions.
   final bool ignoreAnalysisOptions;
 
+  /// Cached analysis options loaded from analysis_options.yaml.
+  AnalysisOptions? _analysisOptions;
+
+  /// Whether analysis options have been loaded yet.
+  bool _analysisOptionsLoaded = false;
+
   /// Creates a new file scanner.
   FileScanner({
     required this.rootPath,
@@ -36,6 +43,9 @@ class FileScanner {
   ///
   /// Returns absolute file paths.
   Future<List<String>> scan() async {
+    // Load analysis_options.yaml if not already loaded
+    await _loadAnalysisOptions();
+
     final results = <String>[];
     final rootDir = Directory(rootPath);
 
@@ -83,6 +93,9 @@ class FileScanner {
   ///
   /// Used when custom paths are provided via CLI.
   Future<List<String>> scanDirectories(List<String> directories) async {
+    // Load analysis_options.yaml if not already loaded
+    await _loadAnalysisOptions();
+
     final results = <String>[];
 
     for (final dirPath in directories) {
@@ -129,6 +142,7 @@ class FileScanner {
 
     final packageRelative = PathUtils.toPackageRelative(filePath, rootPath);
 
+    // Check user-provided patterns
     for (final pattern in excludePatterns) {
       final glob = Glob(pattern);
       if (glob.matches(packageRelative) || glob.matches(filePath)) {
@@ -136,7 +150,36 @@ class FileScanner {
       }
     }
 
+    // Check analysis_options.yaml patterns (already loaded by scan())
+    if (_analysisOptions != null) {
+      for (final pattern in _analysisOptions!.excludePatterns) {
+        final glob = Glob(pattern);
+        if (glob.matches(packageRelative) || glob.matches(filePath)) {
+          return true;
+        }
+      }
+    }
+
     return false;
+  }
+
+  /// Loads exclude patterns from analysis_options.yaml if not already loaded.
+  ///
+  /// This is called automatically by scan() and scanDirectories().
+  Future<void> _loadAnalysisOptions() async {
+    // Skip if already loaded or if user wants to ignore analysis_options.yaml
+    if (_analysisOptionsLoaded || ignoreAnalysisOptions) {
+      return;
+    }
+
+    _analysisOptionsLoaded = true;
+
+    try {
+      _analysisOptions = await AnalysisOptionsReader.read(rootPath);
+    } catch (e) {
+      // Silently ignore errors - analysis_options.yaml is optional
+      _analysisOptions = null;
+    }
   }
 
   /// Gets statistics about the scan.

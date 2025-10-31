@@ -3,6 +3,8 @@ import 'package:ansi_styles/ansi_styles.dart';
 import '../models/analysis_report.dart';
 import '../models/class_declaration.dart';
 import '../models/method_declaration.dart';
+import '../models/variable_declaration.dart';
+import '../models/variable_types.dart';
 
 /// Formats analysis reports for different output modes.
 class OutputFormatter {
@@ -42,7 +44,10 @@ class OutputFormatter {
       }
 
       // Summary header
-      buffer.writeln(AnsiStyles.yellow('⚠ Found ${report.unusedClasses.length} unused declaration(s):'));
+      final classLabel = report.unusedClasses.length == 1 ? 'declaration' : 'declarations';
+      buffer.writeln(
+        AnsiStyles.yellow('⚠ Found ${report.unusedClasses.length} unused class $classLabel:'),
+      );
       buffer.writeln();
 
       // Show counts by kind
@@ -64,6 +69,7 @@ class OutputFormatter {
       }
     }
 
+    // Show unused methods (T035, T045 - Phase 5: static method support, T055 - Phase 6: extension method support)
     if (report.unusedMethods.isNotEmpty) {
       // Group methods by type and class
       final instanceMethodsByClass = <String, List<MethodDeclaration>>{};
@@ -90,9 +96,11 @@ class OutputFormatter {
         }
       }
 
-      buffer.writeln(AnsiStyles.yellow('⚠ Found ${report.unusedMethods.length} unused method(s):'));
+      final methodLabel = report.unusedMethods.length == 1 ? 'method' : 'methods';
+      buffer.writeln(AnsiStyles.yellow('⚠ Found ${report.unusedMethods.length} unused $methodLabel:'));
       buffer.writeln();
 
+      // Show static methods grouped by class (T045 - Phase 5)
       if (staticMethodsByClass.isNotEmpty) {
         final totalStatic = staticMethodsByClass.values.fold(0, (sum, list) => sum + list.length);
         buffer.writeln(AnsiStyles.magenta('Static Methods: $totalStatic'));
@@ -193,6 +201,45 @@ class OutputFormatter {
       }
     }
 
+    // Show unused variables (US1)
+    if (report.unusedVariables.isNotEmpty) {
+      buffer.writeln(AnsiStyles.yellow('⚠ Found ${report.unusedVariables.length} unused variable(s):'));
+      buffer.writeln();
+
+      final grouped = <VariableType, List<VariableDeclaration>>{};
+      for (final variable in report.unusedVariables) {
+        grouped.putIfAbsent(variable.variableType, () => []).add(variable);
+      }
+
+      for (final type in _variableTypePriorityOrder) {
+        final variables = grouped[type];
+        if (variables == null || variables.isEmpty) {
+          continue;
+        }
+
+        variables.sort((a, b) {
+          final pathCompare = a.filePath.compareTo(b.filePath);
+          if (pathCompare != 0) return pathCompare;
+          final lineCompare = a.lineNumber.compareTo(b.lineNumber);
+          if (lineCompare != 0) return lineCompare;
+          final columnCompare = a.columnNumber.compareTo(b.columnNumber);
+          if (columnCompare != 0) return columnCompare;
+          return a.name.compareTo(b.name);
+        });
+
+        buffer.writeln(AnsiStyles.magenta('${_getVariableTypeLabel(type)}: ${variables.length}'));
+        buffer.writeln();
+
+        for (final variable in variables) {
+          final location = '${variable.filePath}:${variable.lineNumber}:${variable.columnNumber}';
+          buffer.writeln('  ${AnsiStyles.gray(location)}');
+          buffer.writeln('    ${AnsiStyles.white(variable.name)}');
+        }
+
+        buffer.writeln();
+      }
+    }
+
     if (!quiet) {
       buffer.writeln(AnsiStyles.bold(AnsiStyles.cyan('─── Summary ───')));
       buffer.writeln();
@@ -201,13 +248,13 @@ class OutputFormatter {
       buffer
           .writeln('  ${AnsiStyles.bold('Files analyzed:')} ${AnsiStyles.white(report.summary.totalFiles.toString())}');
       buffer.writeln(
-          '  ${AnsiStyles.bold('Total declarations:')} ${AnsiStyles.white(report.summary.totalClasses.toString())}');
+          '  ${AnsiStyles.bold('Type declarations analyzed:')} ${AnsiStyles.white(report.summary.totalClasses.toString())}');
 
       final unusedColor = report.summary.unusedCount > 0 ? AnsiStyles.yellow : AnsiStyles.green;
-      buffer.writeln('  ${AnsiStyles.bold('Unused:')} ${unusedColor(report.summary.unusedCount.toString())}');
+      buffer.writeln('  ${AnsiStyles.bold('Unused type declarations:')} ${unusedColor(report.summary.unusedCount.toString())}');
 
       final usageRate = (report.summary.usageRate * 100).toStringAsFixed(1);
-      buffer.writeln('  ${AnsiStyles.bold('Usage rate:')} ${AnsiStyles.green('$usageRate%')}');
+      buffer.writeln('  ${AnsiStyles.bold('Type usage rate:')} ${AnsiStyles.green('$usageRate%')}');
 
       // Show method statistics if methods were analyzed (T035)
       if (report.summary.totalMethods > 0) {
@@ -221,6 +268,20 @@ class OutputFormatter {
 
         final methodUsageRate = (report.summary.methodUsageRate * 100).toStringAsFixed(1);
         buffer.writeln('  ${AnsiStyles.bold('Method usage rate:')} ${AnsiStyles.green('$methodUsageRate%')}');
+      }
+
+      if (report.summary.totalVariables > 0) {
+        buffer.writeln();
+        buffer.writeln(
+            '  ${AnsiStyles.bold('Variables analyzed:')} ${AnsiStyles.white(report.summary.totalVariables.toString())}');
+
+        final variableUnusedColor = report.summary.unusedVariableCount > 0 ? AnsiStyles.yellow : AnsiStyles.green;
+        buffer.writeln(
+            '  ${AnsiStyles.bold('Unused variables:')} ${variableUnusedColor(report.summary.unusedVariableCount.toString())}');
+
+        final variableUsageRate = (report.summary.variableUsageRate * 100).toStringAsFixed(1);
+        buffer.writeln('  ${AnsiStyles.bold('Variable usage rate:')} ${AnsiStyles.green('$variableUsageRate%')}');
+
       }
 
       // Show exclusion details if any files were excluded
@@ -287,6 +348,7 @@ class OutputFormatter {
       'unusedClasses':
           onlyMethods ? <Map<String, dynamic>>[] : report.unusedClasses.map(_classDeclarationToJson).toList(),
       'unusedMethods': report.unusedMethods.map(_methodDeclarationToJson).toList(),
+      'unusedVariables': report.unusedVariables.map(_variableDeclarationToJson).toList(),
       'summary': _summaryToJson(report.summary),
       'warnings': report.warnings.map(_warningToJson).toList(),
     };
@@ -301,11 +363,17 @@ class OutputFormatter {
     if (report.unusedClasses.isEmpty) {
       parts.add('✓ No unused classes');
     } else {
-      parts.add('✗ ${report.unusedClasses.length} unused class declaration(s)');
+      final classLabel = report.unusedClasses.length == 1 ? 'unused class declaration' : 'unused class declarations';
+      parts.add('✗ ${report.unusedClasses.length} $classLabel');
     }
 
     if (report.unusedMethods.isNotEmpty) {
-      parts.add('${report.unusedMethods.length} unused method(s)');
+      final methodLabel = report.unusedMethods.length == 1 ? 'unused method' : 'unused methods';
+      parts.add('${report.unusedMethods.length} $methodLabel');
+    }
+
+    if (report.unusedVariables.isNotEmpty) {
+      parts.add('${report.unusedVariables.length} unused variable(s)');
     }
 
     return parts.join(', ');
@@ -376,6 +444,27 @@ class OutputFormatter {
     };
   }
 
+  static Map<String, dynamic> _variableDeclarationToJson(VariableDeclaration declaration) {
+    return {
+      'name': declaration.name,
+      'filePath': declaration.filePath,
+      'lineNumber': declaration.lineNumber,
+      'columnNumber': declaration.columnNumber,
+      'variableType': declaration.variableType.name,
+      'scopeId': declaration.scope.id,
+      'scopeType': declaration.scope.scopeType.name,
+      'enclosingDeclaration': declaration.scope.enclosingDeclaration,
+      'mutability': declaration.mutability.name,
+      'isIntentionallyUnused': declaration.isIntentionallyUnused,
+      'isFieldInitializer': declaration.isFieldInitializer,
+      'isPatternBinding': declaration.isPatternBinding,
+      'patternType': declaration.patternType?.name,
+      'annotations': declaration.annotations,
+      'ignoreComments': declaration.ignoreComments,
+      'staticType': declaration.staticType,
+    };
+  }
+
   static Map<String, dynamic> _summaryToJson(AnalysisSummary summary) {
     final data = <String, dynamic>{
       'totalFiles': summary.totalFiles,
@@ -385,6 +474,20 @@ class OutputFormatter {
       'totalMethods': summary.totalMethods,
       'unusedMethodCount': summary.unusedMethodCount,
       'unusedMethods': summary.unusedMethodCount,
+      'totalVariables': summary.totalVariables,
+      'unusedVariableCount': summary.unusedVariableCount,
+      'unusedVariables': summary.unusedVariableCount,
+      'totalLocalVariables': summary.totalLocalVariables,
+      'unusedLocalVariableCount': summary.unusedLocalVariableCount,
+      'totalParameterVariables': summary.totalParameterVariables,
+      'unusedParameterVariableCount': summary.unusedParameterVariableCount,
+      'totalTopLevelVariables': summary.totalTopLevelVariables,
+      'unusedTopLevelVariableCount': summary.unusedTopLevelVariableCount,
+      'totalCatchVariables': summary.totalCatchVariables,
+      'unusedCatchVariableCount': summary.unusedCatchVariableCount,
+      'variablesExplicitlyIgnored': summary.variablesExplicitlyIgnored,
+      'variablesIgnoredByConvention': summary.variablesIgnoredByConvention,
+      'variablesIgnoredByPattern': summary.variablesIgnoredByPattern,
       'filesExcluded': summary.excludedFiles,
       'filesExcludedAsGenerated': summary.filesExcludedAsGenerated,
       'filesExcludedByIgnorePatterns': summary.filesExcludedByIgnorePatterns,
@@ -395,6 +498,7 @@ class OutputFormatter {
       'durationMs': summary.durationMs,
       'usageRate': summary.usageRate,
       'methodUsageRate': summary.methodUsageRate,
+      'variableUsageRate': summary.variableUsageRate,
     };
 
     if (summary.precisionRate != null) {
@@ -415,5 +519,25 @@ class OutputFormatter {
       'lineNumber': warning.lineNumber,
       'isFatal': warning.isFatal,
     };
+  }
+
+  static const List<VariableType> _variableTypePriorityOrder = [
+    VariableType.local,
+    VariableType.parameter,
+    VariableType.topLevel,
+    VariableType.catchClause,
+  ];
+
+  static String _getVariableTypeLabel(VariableType type) {
+    switch (type) {
+      case VariableType.local:
+        return 'Local Variables';
+      case VariableType.parameter:
+        return 'Parameters';
+      case VariableType.topLevel:
+        return 'Top-Level Variables';
+      case VariableType.catchClause:
+        return 'Catch Variables';
+    }
   }
 }

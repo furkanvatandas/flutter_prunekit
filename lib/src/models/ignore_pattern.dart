@@ -1,6 +1,6 @@
 import 'package:glob/glob.dart';
 
-/// Represents a pattern for excluding files, classes, or methods from analysis.
+/// Represents a pattern for excluding files, classes, methods, or variables from analysis.
 ///
 /// Supports glob patterns like `lib/legacy/**` or `**/old_*.dart`.
 ///
@@ -70,11 +70,31 @@ class IgnorePattern {
     return _glob.matches(methodName);
   }
 
+  /// Checks if a variable name matches this pattern (T012).
+  bool matchesVariableName(String variableName) {
+    if (type != IgnorePatternType.variable) {
+      return false;
+    }
+    return _glob.matches(variableName);
+  }
+
+  /// Checks if a parameter name matches this pattern (T012).
+  bool matchesParameterName(String parameterName) {
+    if (type == IgnorePatternType.parameter) {
+      return _glob.matches(parameterName);
+    }
+    if (type == IgnorePatternType.variable) {
+      // Variable patterns may be shared for parameters when no dedicated entry exists.
+      return _glob.matches(parameterName);
+    }
+    return false;
+  }
+
   /// Returns the priority of this pattern source.
   ///
   /// Higher priority patterns take precedence:
   /// - Annotation (@keepUnused): priority 3
-  /// - Config file (flutter_prunekit.yaml): priority 2
+  /// - Config file (flutter_dead_code.yaml): priority 2
   /// - CLI flag (--exclude): priority 1
   int get priority {
     switch (source) {
@@ -109,6 +129,12 @@ enum IgnorePatternType {
 
   /// Pattern matches method names (e.g., `_private*`, `ClassName.methodName`).
   method,
+
+  /// Pattern matches variable names (e.g., `temp_*`).
+  variable,
+
+  /// Pattern matches parameter names (e.g., `_unused*`).
+  parameter,
 }
 
 /// The source of an ignore pattern.
@@ -119,7 +145,7 @@ enum IgnoreSource {
   /// From @keepUnused or @dead_code_ignore annotation (highest priority).
   annotation,
 
-  /// From flutter_prunekit.yaml configuration file.
+  /// From flutter_dead_code.yaml configuration file.
   configFile,
 
   /// From --exclude CLI flag (lowest priority).

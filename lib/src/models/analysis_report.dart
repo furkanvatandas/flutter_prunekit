@@ -1,5 +1,6 @@
 import 'class_declaration.dart';
 import 'method_declaration.dart';
+import 'variable_declaration.dart';
 
 /// The complete analysis report containing unused classes and metadata.
 ///
@@ -20,6 +21,9 @@ class AnalysisReport {
   /// List of unused method/function declarations (T008).
   final List<MethodDeclaration> unusedMethods;
 
+  /// List of unused variable declarations (US1).
+  final List<VariableDeclaration> unusedVariables;
+
   /// Summary statistics and metrics.
   final AnalysisSummary summary;
 
@@ -34,7 +38,9 @@ class AnalysisReport {
     required this.summary,
     required this.warnings,
     List<MethodDeclaration>? unusedMethods,
-  }) : unusedMethods = unusedMethods ?? [];
+    List<VariableDeclaration>? unusedVariables,
+  })  : unusedMethods = unusedMethods ?? [],
+        unusedVariables = unusedVariables ?? [];
 
   /// Whether the analysis completed successfully without errors.
   bool get isSuccess => warnings.isEmpty || warnings.every((w) => !w.isFatal);
@@ -45,8 +51,11 @@ class AnalysisReport {
   /// Whether any unused methods were found (T008).
   bool get hasUnusedMethods => unusedMethods.isNotEmpty;
 
+  /// Whether any unused variables were found (US1).
+  bool get hasUnusedVariables => unusedVariables.isNotEmpty;
+
   /// Whether any unused code was found (classes or methods) (T008).
-  bool get hasUnusedCode => hasUnusedClasses || hasUnusedMethods;
+  bool get hasUnusedCode => hasUnusedClasses || hasUnusedMethods || hasUnusedVariables;
 
   /// Determines the appropriate exit code based on the report.
   ///
@@ -103,6 +112,45 @@ class AnalysisSummary {
   /// Number of methods explicitly ignored via @keepUnused or lifecycle detection (T008).
   final int methodsExplicitlyIgnored;
 
+  /// Total number of variables analyzed (US1).
+  final int totalVariables;
+
+  /// Number of unused variables detected (US1).
+  final int unusedVariableCount;
+
+  /// Total number of local variables analyzed (US1).
+  final int totalLocalVariables;
+
+  /// Number of unused local variables detected (US1).
+  final int unusedLocalVariableCount;
+
+  /// Total number of parameter variables analyzed (US2).
+  final int totalParameterVariables;
+
+  /// Number of unused parameter variables detected (US2).
+  final int unusedParameterVariableCount;
+
+  /// Total number of top-level variables analyzed (US3).
+  final int totalTopLevelVariables;
+
+  /// Number of unused top-level variables detected (US3).
+  final int unusedTopLevelVariableCount;
+
+  /// Total number of catch variables analyzed (US4).
+  final int totalCatchVariables;
+
+  /// Number of unused catch variables detected (US4).
+  final int unusedCatchVariableCount;
+
+  /// Number of variables explicitly ignored via annotations/comments (US5).
+  final int variablesExplicitlyIgnored;
+
+  /// Number of variables ignored due to underscore convention (US1).
+  final int variablesIgnoredByConvention;
+
+  /// Number of variables ignored by configuration patterns (US5).
+  final int variablesIgnoredByPattern;
+
   /// Total analysis duration in milliseconds.
   final int durationMs;
 
@@ -131,6 +179,19 @@ class AnalysisSummary {
     this.filesExcludedAsGenerated = 0,
     this.filesExcludedByIgnorePatterns = 0,
     this.classesExplicitlyIgnored = 0,
+    this.totalVariables = 0,
+    this.unusedVariableCount = 0,
+    this.totalLocalVariables = 0,
+    this.unusedLocalVariableCount = 0,
+    this.totalParameterVariables = 0,
+    this.unusedParameterVariableCount = 0,
+    this.totalTopLevelVariables = 0,
+    this.unusedTopLevelVariableCount = 0,
+    this.totalCatchVariables = 0,
+    this.unusedCatchVariableCount = 0,
+    this.variablesExplicitlyIgnored = 0,
+    this.variablesIgnoredByConvention = 0,
+    this.variablesIgnoredByPattern = 0,
     this.precisionRate,
     this.recallRate,
   });
@@ -140,6 +201,9 @@ class AnalysisSummary {
 
   /// Method usage rate (percentage of methods that are used) (T008).
   double get methodUsageRate => totalMethods > 0 ? (totalMethods - unusedMethodCount) / totalMethods : 0.0;
+
+  /// Variable usage rate (percentage of variables that are used) (US1).
+  double get variableUsageRate => totalVariables > 0 ? (totalVariables - unusedVariableCount) / totalVariables : 0.0;
 }
 
 /// A warning encountered during analysis.
@@ -174,7 +238,7 @@ enum WarningType {
   /// Syntax error in a Dart file (prevents AST parsing).
   syntaxError,
 
-  /// Configuration file error (flutter_prunekit.yaml).
+  /// Configuration file error (flutter_dead_code.yaml).
   configError,
 
   /// Invalid ignore pattern (glob syntax error).

@@ -1,0 +1,130 @@
+# Example configuration for flutter_dead_code
+# Copy this file to flutter_dead_code.yaml in your project root
+
+# Patterns to exclude from analysis
+# Supports glob patterns (**, *, ?)
+exclude:
+  # Legacy code pending migration
+  - 'lib/legacy/**'
+  
+  # Experimental features not yet integrated
+  - 'lib/experimental/**'
+  - '**/experimental_*.dart'
+  
+  # Generated code (usually auto-excluded, but can be explicit)
+  - '**/*.g.dart'
+  - '**/*.freezed.dart'
+  - '**/*.gr.dart'
+  
+  # Platform-specific code that may not be used in all builds
+  - 'lib/platform/web/**'
+  - 'lib/platform/desktop/**'
+  
+  # Third-party code or vendored libraries
+  - 'lib/vendor/**'
+  
+  # Deprecated code scheduled for removal
+  - '**/deprecated_*.dart'
+  - 'lib/deprecated/**'
+
+# Custom annotations to treat as "keep unused" directives
+# Classes with these annotations will never be reported as unused
+ignore_annotations:
+  # Standard annotation (always recognized)
+  - 'keepUnused'
+  
+  # Common custom annotations you might use
+  - 'deprecated'        # Classes marked deprecated but kept for compatibility
+  - 'experimental'      # Experimental APIs not yet stable
+  - 'internal'          # Internal APIs not meant for external use
+  - 'visibleForTesting' # Test-only classes
+  - 'doNotRemove'       # Custom marker annotation
+
+# Method-level ignore patterns
+# Methods matching these patterns will not be reported as unused
+ignore_methods:
+  # Test helper methods
+  - 'test*'
+  - 'setUp*'
+  - 'tearDown*'
+  
+  # Debug/development methods
+  - 'debug*'
+  - '_log*'
+  
+  # Internal methods
+  - '_internal*'
+  
+  # Specific class patterns
+  - 'TestHelper.*'      # All methods in TestHelper class
+  - '*.cleanup'         # cleanup method in any class
+
+# Variable-level ignore patterns  
+# Variables matching these patterns will not be reported as unused
+ignore_variables:
+  # Temporary variables
+  - 'temp*'
+  - 'tmp*'
+  
+  # Debug variables
+  - 'debug*'
+  
+  # Environment/config variables
+  - 'env*'
+  - 'config*'
+  
+  # Note: Single underscore (_) is always ignored by convention
+
+# Parameter-level ignore patterns
+# Parameters matching these patterns will not be reported as unused
+ignore_parameters:
+  # Flutter context (often required but unused)
+  - 'context'
+  
+  # Common unused parameters
+  - '_*'                # Intentionally unused (underscore prefix)
+  - 'event'             # Event handlers that don't use event
+  - 'key'               # Widget key parameters
+
+# Check for unused catch block variables
+# Default: false (catch variables are often intentionally unused)
+# Set to true if you want to detect unused exception/stacktrace variables
+# Example: catch (e) { rethrow; } - 'e' would be flagged if enabled
+check_catch_variables: false
+
+# Check for unused BuildContext parameters
+# Default: false (BuildContext is often required by Flutter APIs but not used)
+# Set to true if you want to detect unused BuildContext parameters
+# Example: Widget build(BuildContext context) { return Text('Hello'); } - 'context' would be flagged if enabled
+check_build_context_parameters: false
+
+# Examples of patterns you can use:
+#
+# Single file:
+#   - 'lib/models/old_user.dart'
+#
+# All files in a directory:
+#   - 'lib/widgets/legacy/**'
+#
+# All files matching a pattern:
+#   - '**/temp_*.dart'
+#   - '**/*_old.dart'
+#
+# Multiple directories:
+#   - 'lib/a/**'
+#   - 'lib/b/**'
+#   - 'packages/*/lib/internal/**'
+#
+# File extensions:
+#   - '**/*.generated.dart'
+#   - '**/*.mocks.dart'
+
+# NOTE: This config file has MEDIUM priority in the ignore hierarchy:
+# 1. @keepUnused annotation (HIGHEST - always wins)
+# 2. flutter_dead_code.yaml config file (MEDIUM - this file)
+# 3. --exclude CLI flag (LOWEST - can be overridden by above)
+#
+# For temporary exclusions, prefer CLI flags:
+#   dart run flutter_dead_code --exclude 'lib/temp/**'
+#
+# For permanent exclusions, use this config file or annotations

@@ -3,15 +3,27 @@ import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/source/line_info.dart';
+import 'package:analyzer/dart/ast/token.dart';
 import 'dart:io';
 import '../models/class_declaration.dart' as model;
 import '../models/class_reference.dart';
 import '../models/method_declaration.dart' as method_model;
 import '../models/method_invocation.dart' as invocation_model;
 import '../models/analysis_report.dart';
+import '../models/scope_context.dart';
+import '../models/catch_variable.dart' as catch_model;
+import '../models/pattern_variable.dart' as pattern_model;
+import '../models/variable_declaration.dart' as variable_model;
+import '../models/parameter_declaration.dart' as parameter_model;
+import '../models/variable_reference.dart' as variable_ref;
+import '../models/variable_types.dart';
+import '../services/pattern_variable_extractor.dart';
 import '../utils/dart_analyzer_wrapper.dart';
 import '../utils/part_file_detector.dart';
 import '../utils/extension_resolver.dart';
+import '../services/variable_scope_tracker.dart';
+import '../utils/underscore_convention_checker.dart';
+import '../utils/string_interpolation_tracker.dart';
 
 /// Analyzes Dart AST to extract class declarations and references.
 ///
@@ -99,8 +111,8 @@ class ASTAnalyzer {
 
       // Check for PARSE/SYNTAX errors only (not semantic errors like unused imports)
       // Only syntax errors prevent analysis - semantic errors can be ignored
-      final syntaxErrors = resolvedUnit.diagnostics.where((error) {
-        final errorName = error.diagnosticCode.name.toUpperCase();
+      final syntaxErrors = resolvedUnit.errors.where((error) {
+        final errorName = error.errorCode.name.toUpperCase();
         return errorName.contains('PARSE') ||
             errorName.contains('SYNTAX') ||
             errorName.contains('EXPECTED_TOKEN') ||
@@ -125,11 +137,18 @@ class ASTAnalyzer {
       final referenceVisitor = _ClassReferenceVisitor(filePath, lineInfo);
       final functionVisitor = _FunctionDeclarationVisitor(filePath, lineInfo);
       final invocationVisitor = _FunctionInvocationVisitor(filePath, lineInfo);
+      final variableScopeTracker = VariableScopeTracker();
+      final variableVisitor = _VariableCollectorVisitor(
+        filePath: filePath,
+        lineInfo: lineInfo,
+        scopeTracker: variableScopeTracker,
+      );
 
       resolvedUnit.unit.visitChildren(declarationVisitor);
       resolvedUnit.unit.visitChildren(referenceVisitor);
       resolvedUnit.unit.visitChildren(functionVisitor);
       resolvedUnit.unit.visitChildren(invocationVisitor);
+      variableVisitor.collect(resolvedUnit.unit);
 
       return FileAnalysisResult(
         filePath: filePath,
@@ -138,6 +157,8 @@ class ASTAnalyzer {
         hasDynamicTypeUsage: referenceVisitor.hasDynamicTypeUsage,
         methodDeclarations: functionVisitor.declarations,
         methodInvocations: invocationVisitor.invocations,
+        variableDeclarations: variableVisitor.declarations,
+        variableReferences: variableVisitor.references,
       );
     } catch (e) {
       // Catch any unexpected errors during analysis
@@ -565,7 +586,6 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
     final methodName = node.methodName.name;
     final target = node.target;
     final resolvedElement = node.methodName.element;
-    // final declarationFilePath = _getDeclarationFilePath(resolvedElement);
 
     // T053: Check if this is an extension method call first
     final extensionElement = ExtensionResolver.resolveExtensionFromMethodCall(node);
@@ -1544,6 +1564,1029 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
   }
 }
 
+/// Visitor that extracts variable declarations and references for variable analysis (US1).
+class _VariableCollectorVisitor extends RecursiveAstVisitor<void> {
+  final String filePath;
+  final LineInfo lineInfo;
+  final VariableScopeTracker scopeTracker;
+  final UnderscoreConventionChecker underscoreChecker;
+  late final PatternVariableExtractor patternExtractor;
+  final StringInterpolationTracker stringInterpolationTracker;
+
+  final List<variable_model.VariableDeclaration> declarations = [];
+  final List<variable_ref.VariableReference> references = [];
+
+  int _closureCounter = 0;
+  final Set<int> _stringInterpolationOffsets = <int>{};
+
+  _VariableCollectorVisitor({
+    required this.filePath,
+    required this.lineInfo,
+    required this.scopeTracker,
+    UnderscoreConventionChecker? underscoreChecker,
+  })  : underscoreChecker = underscoreChecker ?? const UnderscoreConventionChecker(),
+        stringInterpolationTracker = const StringInterpolationTracker() {
+    patternExtractor = PatternVariableExtractor(
+      filePath: filePath,
+      lineInfo: lineInfo,
+      underscoreChecker: this.underscoreChecker,
+      buildVariableId: _buildVariableId,
+    );
+  }
+
+  /// Traverses the compilation unit while managing the root scope.
+  void collect(CompilationUnit unit) {
+    final rootScope = scopeTracker.pushScope(
+      scopeType: ScopeType.block,
+      filePath: filePath,
+      startLine: 1,
+      endLine: _lineNumber(unit.end),
+      enclosingDeclaration: null,
+    );
+
+    try {
+      unit.accept(this);
+    } finally {
+      _popScope(rootScope);
+    }
+  }
+
+  @override
+  void visitFunctionDeclaration(FunctionDeclaration node) {
+    final body = node.functionExpression.body;
+    if (body is EmptyFunctionBody) {
+      super.visitFunctionDeclaration(node);
+      return;
+    }
+
+    // Nested function declarations should be treated as closures for capture detection
+    final isNested = scopeTracker.depth > 0;
+    final scopeType = isNested ? ScopeType.closure : ScopeType.function;
+
+    final scope = _pushScopeForNode(
+      body,
+      scopeType,
+      enclosingDeclaration: node.name.lexeme,
+    );
+    _registerParameters(node.functionExpression.parameters, scope);
+
+    try {
+      super.visitFunctionDeclaration(node);
+    } finally {
+      _popScope(scope);
+    }
+  }
+
+  @override
+  void visitMethodDeclaration(MethodDeclaration node) {
+    final body = node.body;
+    if (body is EmptyFunctionBody) {
+      super.visitMethodDeclaration(node);
+      return;
+    }
+
+    final scope = _pushScopeForNode(
+      body,
+      ScopeType.method,
+      enclosingDeclaration: _buildMethodName(node),
+    );
+    _registerParameters(node.parameters, scope);
+
+    try {
+      super.visitMethodDeclaration(node);
+    } finally {
+      _popScope(scope);
+    }
+  }
+
+  @override
+  void visitConstructorDeclaration(ConstructorDeclaration node) {
+    final body = node.body;
+    if (body is EmptyFunctionBody) {
+      super.visitConstructorDeclaration(node);
+      return;
+    }
+
+    final className =
+        (node.parent is ClassDeclaration) ? (node.parent as ClassDeclaration).name.lexeme : '<constructor>';
+    final constructorName =
+        node.name != null && node.name!.lexeme.isNotEmpty ? '$className.${node.name!.lexeme}' : className;
+
+    final scope = _pushScopeForNode(
+      body,
+      ScopeType.method,
+      enclosingDeclaration: constructorName,
+    );
+    _registerParameters(node.parameters, scope);
+
+    try {
+      super.visitConstructorDeclaration(node);
+    } finally {
+      _popScope(scope);
+    }
+  }
+
+  @override
+  void visitFunctionExpression(FunctionExpression node) {
+    final parent = node.parent;
+    if (parent is FunctionDeclaration || parent is MethodDeclaration || parent is ConstructorDeclaration) {
+      super.visitFunctionExpression(node);
+      return;
+    }
+
+    final body = node.body;
+    final scope = _pushScopeForNode(
+      body,
+      ScopeType.closure,
+      enclosingDeclaration: _buildClosureName(body),
+    );
+    _registerParameters(node.parameters, scope);
+
+    try {
+      super.visitFunctionExpression(node);
+    } finally {
+      _popScope(scope);
+    }
+  }
+
+  @override
+  void visitBlock(Block node) {
+    final scope = _pushScopeForNode(node, ScopeType.block);
+
+    try {
+      super.visitBlock(node);
+    } finally {
+      _popScope(scope);
+    }
+  }
+
+  @override
+  void visitForStatement(ForStatement node) {
+    final loopScope = _pushScopeForNode(
+      node,
+      ScopeType.block,
+      enclosingDeclaration: 'for-loop',
+    );
+
+    try {
+      // Handle for loop initializer variables
+      final forLoopParts = node.forLoopParts;
+      if (forLoopParts is ForPartsWithDeclarations) {
+        final variables = forLoopParts.variables;
+        final mutability = _resolveMutability(variables);
+        final annotations = _extractAnnotations(variables.metadata);
+        final ignoreComments = _extractLeadingComments(node);
+
+        for (final variable in variables.variables) {
+          final identifier = variable.name;
+          final location = lineInfo.getLocation(identifier.offset);
+          final declaration = variable_model.VariableDeclaration(
+            id: _buildVariableId(loopScope, identifier.lexeme),
+            name: identifier.lexeme,
+            filePath: filePath,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber - 1,
+            variableType: VariableType.local,
+            scope: loopScope,
+            mutability: mutability,
+            isIntentionallyUnused: underscoreChecker.isIntentionallyUnused(identifier.lexeme),
+            annotations: annotations,
+            ignoreComments: ignoreComments,
+            staticType: variable.declaredElement?.type.getDisplayString(withNullability: true),
+          );
+
+          declarations.add(declaration);
+          scopeTracker.registerVariable(declaration);
+        }
+      } else if (forLoopParts is ForEachPartsWithDeclaration) {
+        final loopVariable = forLoopParts.loopVariable;
+        final identifier = loopVariable.name;
+        final location = lineInfo.getLocation(identifier.offset);
+        final keyword = loopVariable.keyword;
+        final mutability = keyword != null ? _mutabilityFromPatternKeyword(keyword) : Mutability.mutable;
+        final ignoreComments = _extractLeadingComments(node);
+
+        final declaration = variable_model.VariableDeclaration(
+          id: _buildVariableId(loopScope, identifier.lexeme),
+          name: identifier.lexeme,
+          filePath: filePath,
+          lineNumber: location.lineNumber,
+          columnNumber: location.columnNumber - 1,
+          variableType: VariableType.local,
+          scope: loopScope,
+          mutability: mutability,
+          isIntentionallyUnused: underscoreChecker.isIntentionallyUnused(identifier.lexeme),
+          annotations: const [],
+          ignoreComments: ignoreComments,
+          staticType: loopVariable.declaredElement?.type.getDisplayString(withNullability: true),
+        );
+
+        declarations.add(declaration);
+        scopeTracker.registerVariable(declaration);
+      }
+
+      super.visitForStatement(node);
+    } finally {
+      _popScope(loopScope);
+    }
+  }
+
+  @override
+  void visitForElement(ForElement node) {
+    final loopScope = _pushScopeForNode(
+      node,
+      ScopeType.block,
+      enclosingDeclaration: 'for-element',
+    );
+
+    try {
+      // Handle for element variables
+      final forLoopParts = node.forLoopParts;
+      if (forLoopParts is ForPartsWithDeclarations) {
+        final variables = forLoopParts.variables;
+        final mutability = _resolveMutability(variables);
+        final annotations = _extractAnnotations(variables.metadata);
+        final ignoreComments = _extractLeadingComments(node);
+
+        for (final variable in variables.variables) {
+          final identifier = variable.name;
+          final location = lineInfo.getLocation(identifier.offset);
+          final declaration = variable_model.VariableDeclaration(
+            id: _buildVariableId(loopScope, identifier.lexeme),
+            name: identifier.lexeme,
+            filePath: filePath,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber - 1,
+            variableType: VariableType.local,
+            scope: loopScope,
+            mutability: mutability,
+            isIntentionallyUnused: underscoreChecker.isIntentionallyUnused(identifier.lexeme),
+            annotations: annotations,
+            ignoreComments: ignoreComments,
+            staticType: variable.declaredElement?.type.getDisplayString(withNullability: true),
+          );
+
+          declarations.add(declaration);
+          scopeTracker.registerVariable(declaration);
+        }
+      } else if (forLoopParts is ForEachPartsWithDeclaration) {
+        final loopVariable = forLoopParts.loopVariable;
+        final identifier = loopVariable.name;
+        final location = lineInfo.getLocation(identifier.offset);
+        final keyword = loopVariable.keyword;
+        final mutability = keyword != null ? _mutabilityFromPatternKeyword(keyword) : Mutability.mutable;
+        final ignoreComments = _extractLeadingComments(node);
+
+        final declaration = variable_model.VariableDeclaration(
+          id: _buildVariableId(loopScope, identifier.lexeme),
+          name: identifier.lexeme,
+          filePath: filePath,
+          lineNumber: location.lineNumber,
+          columnNumber: location.columnNumber - 1,
+          variableType: VariableType.local,
+          scope: loopScope,
+          mutability: mutability,
+          isIntentionallyUnused: underscoreChecker.isIntentionallyUnused(identifier.lexeme),
+          annotations: const [],
+          ignoreComments: ignoreComments,
+          staticType: loopVariable.declaredElement?.type.getDisplayString(withNullability: true),
+        );
+
+        declarations.add(declaration);
+        scopeTracker.registerVariable(declaration);
+      }
+
+      super.visitForElement(node);
+    } finally {
+      _popScope(loopScope);
+    }
+  }
+
+  @override
+  void visitVariableDeclarationStatement(VariableDeclarationStatement node) {
+    final currentScope = scopeTracker.currentScope;
+    if (currentScope == null) {
+      super.visitVariableDeclarationStatement(node);
+      return;
+    }
+
+    final declarationList = node.variables;
+    final mutability = _resolveMutability(declarationList);
+    final annotations = _extractAnnotations(declarationList.metadata);
+    final ignoreComments = _extractLeadingComments(node);
+
+    for (final variable in declarationList.variables) {
+      final identifier = variable.name;
+      final location = lineInfo.getLocation(identifier.offset);
+      final declaration = variable_model.VariableDeclaration(
+        id: _buildVariableId(currentScope, identifier.lexeme),
+        name: identifier.lexeme,
+        filePath: filePath,
+        lineNumber: location.lineNumber,
+        columnNumber: location.columnNumber - 1,
+        variableType: VariableType.local,
+        scope: currentScope,
+        mutability: mutability,
+        isIntentionallyUnused: underscoreChecker.isIntentionallyUnused(identifier.lexeme),
+        annotations: annotations,
+        ignoreComments: ignoreComments,
+        staticType: variable.declaredElement?.type.getDisplayString(withNullability: true),
+      );
+
+      declarations.add(declaration);
+      scopeTracker.registerVariable(declaration);
+    }
+
+    super.visitVariableDeclarationStatement(node);
+  }
+
+  @override
+  void visitPatternVariableDeclaration(PatternVariableDeclaration node) {
+    final currentScope = scopeTracker.currentScope;
+    if (currentScope == null) {
+      super.visitPatternVariableDeclaration(node);
+      return;
+    }
+
+    final annotations = _extractAnnotations(node.metadata);
+    final ignoreComments = _extractLeadingComments(node);
+    final mutability = _mutabilityFromPatternKeyword(node.keyword);
+
+    final patternVariables = patternExtractor.extractFromDestructuring(
+      declaration: node,
+      scope: currentScope,
+      baseMutability: mutability,
+      annotations: annotations,
+      ignoreComments: ignoreComments,
+    );
+
+    _registerPatternVariables(patternVariables);
+
+    super.visitPatternVariableDeclaration(node);
+  }
+
+  @override
+  void visitCatchClause(CatchClause node) {
+    final catchScope = _pushScopeForNode(
+      node.body,
+      ScopeType.catchBlock,
+      enclosingDeclaration: _buildCatchBlockLabel(node),
+    );
+
+    _registerCatchVariables(node, catchScope);
+
+    try {
+      super.visitCatchClause(node);
+    } finally {
+      _popScope(catchScope);
+    }
+  }
+
+  @override
+  void visitSwitchPatternCase(SwitchPatternCase node) {
+    final caseScope = _pushScopeForNode(
+      node,
+      ScopeType.block,
+      enclosingDeclaration: _buildSwitchCaseLabel(node),
+    );
+
+    final ignoreComments = _extractLeadingComments(node);
+    final patternVariables = patternExtractor.extractFromSwitchCase(
+      node: node,
+      scope: caseScope,
+      baseMutability: Mutability.final_,
+      annotations: const [],
+      ignoreComments: ignoreComments,
+    );
+
+    _registerPatternVariables(patternVariables);
+
+    try {
+      super.visitSwitchPatternCase(node);
+    } finally {
+      _popScope(caseScope);
+    }
+  }
+
+  @override
+  void visitCaseClause(CaseClause node) {
+    final currentScope = scopeTracker.currentScope;
+    if (currentScope != null) {
+      final ignoreComments = _extractLeadingComments(node);
+      final patternVariables = patternExtractor.extractFromGuardedPattern(
+        guardedPattern: node.guardedPattern,
+        scope: currentScope,
+        baseMutability: Mutability.final_,
+        annotations: const [],
+        ignoreComments: ignoreComments,
+      );
+      _registerPatternVariables(patternVariables);
+    }
+
+    super.visitCaseClause(node);
+  }
+
+  @override
+  void visitStringInterpolation(StringInterpolation node) {
+    final identifiers = stringInterpolationTracker.collectIdentifiers(node);
+    for (final identifier in identifiers) {
+      _stringInterpolationOffsets.add(identifier.offset);
+    }
+
+    super.visitStringInterpolation(node);
+  }
+
+  @override
+  void visitTopLevelVariableDeclaration(TopLevelVariableDeclaration node) {
+    final currentScope = scopeTracker.currentScope;
+    if (currentScope == null) {
+      super.visitTopLevelVariableDeclaration(node);
+      return;
+    }
+
+    final declarationList = node.variables;
+    final mutability = _resolveMutability(declarationList);
+
+    // T092: Extract annotations from both node and declarationList metadata
+    final nodeAnnotations = _extractAnnotations(node.metadata);
+    final listAnnotations = _extractAnnotations(declarationList.metadata);
+    final ignoreComments = _extractLeadingComments(node);
+
+    for (final variable in declarationList.variables) {
+      final identifier = variable.name;
+      final location = lineInfo.getLocation(identifier.offset);
+
+      // T092: Combine annotations from all sources
+      final combinedAnnotations = <String>{}
+        ..addAll(nodeAnnotations)
+        ..addAll(listAnnotations)
+        ..addAll(_extractAnnotations(variable.metadata));
+
+      final declaration = variable_model.VariableDeclaration(
+        id: _buildTopLevelVariableId(filePath, identifier.lexeme),
+        name: identifier.lexeme,
+        filePath: filePath,
+        lineNumber: location.lineNumber,
+        columnNumber: location.columnNumber - 1,
+        variableType: VariableType.topLevel,
+        scope: currentScope,
+        mutability: mutability,
+        isIntentionallyUnused: underscoreChecker.isIntentionallyUnused(identifier.lexeme),
+        annotations: combinedAnnotations.toList(),
+        ignoreComments: ignoreComments,
+        staticType: variable.declaredElement?.type.getDisplayString(withNullability: true),
+      );
+
+      declarations.add(declaration);
+      scopeTracker.registerVariable(declaration);
+    }
+
+    super.visitTopLevelVariableDeclaration(node);
+  }
+
+  @override
+  void visitSimpleIdentifier(SimpleIdentifier node) {
+    if (node.inDeclarationContext()) {
+      super.visitSimpleIdentifier(node);
+      return;
+    }
+
+    final contextOverride =
+        _stringInterpolationOffsets.remove(node.offset) ? ReferenceContext.stringInterpolation : null;
+
+    final resolvedVariable = scopeTracker.resolveVariable(node.name);
+    if (resolvedVariable == null) {
+      final topLevelReference = _createTopLevelReference(
+        node,
+        overrideContext: contextOverride,
+      );
+      if (topLevelReference != null) {
+        references.add(topLevelReference);
+      }
+      super.visitSimpleIdentifier(node);
+      return;
+    }
+
+    final referenceType = _classifyReference(node);
+    final location = lineInfo.getLocation(node.offset);
+    final currentScope = scopeTracker.currentScope ?? resolvedVariable.scope;
+
+    final reference = variable_ref.VariableReference(
+      id: _buildReferenceId(location.lineNumber, location.columnNumber - 1, resolvedVariable.id),
+      variableId: resolvedVariable.id,
+      filePath: filePath,
+      lineNumber: location.lineNumber,
+      columnNumber: location.columnNumber - 1,
+      referenceType: referenceType,
+      context: _determineReferenceContext(
+        node,
+        referenceType,
+        overrideContext: contextOverride,
+      ),
+      enclosingScope: currentScope,
+      isCapturedByClosure: _isCapturedByClosure(currentScope, resolvedVariable.scope),
+    );
+
+    references.add(reference);
+
+    super.visitSimpleIdentifier(node);
+  }
+
+  void _registerParameters(FormalParameterList? parameterList, ScopeContext scope) {
+    if (parameterList == null || parameterList.parameters.isEmpty) {
+      return;
+    }
+
+    final enclosingCallable = scope.enclosingDeclaration ?? '<anonymous>';
+    var requiredIndex = 0;
+    var optionalIndex = 0;
+    var namedIndex = 0;
+
+    for (final formal in parameterList.parameters) {
+      final parameterDeclaration = _createParameterDeclaration(
+        formal,
+        scope: scope,
+        enclosingCallable: enclosingCallable,
+        requiredPosition: requiredIndex,
+        optionalPosition: optionalIndex,
+        namedPosition: namedIndex,
+      );
+
+      if (parameterDeclaration == null) {
+        continue;
+      }
+
+      declarations.add(parameterDeclaration);
+      scopeTracker.registerVariable(parameterDeclaration);
+
+      switch (parameterDeclaration.parameterKind) {
+        case ParameterKind.required:
+          requiredIndex++;
+          break;
+        case ParameterKind.optionalPositional:
+          optionalIndex++;
+          break;
+        case ParameterKind.named:
+          namedIndex++;
+          break;
+      }
+    }
+  }
+
+  void _registerCatchVariables(CatchClause node, ScopeContext scope) {
+    final enclosingLabel = scope.enclosingDeclaration ?? _buildCatchBlockLabel(node);
+    final clauseComments = _extractLeadingComments(node);
+    final exceptionTypeSource = node.exceptionType?.toSource();
+
+    void register(CatchClauseParameter parameter, CatchVariableType type) {
+      final nameToken = parameter.name;
+      final name = nameToken.lexeme;
+      if (name.isEmpty) {
+        return;
+      }
+
+      final location = lineInfo.getLocation(nameToken.offset);
+      final commentSet = <String>{}
+        ..addAll(clauseComments)
+        ..addAll(_extractLeadingComments(parameter));
+
+      final fragment = parameter.declaredFragment;
+      final element = fragment?.element;
+      final staticType = element?.type.getDisplayString(withNullability: true);
+
+      final declaration = catch_model.CatchVariable(
+        id: _buildVariableId(scope, name),
+        name: name,
+        filePath: filePath,
+        lineNumber: location.lineNumber,
+        columnNumber: location.columnNumber - 1,
+        scope: scope,
+        mutability: Mutability.final_,
+        catchType: type,
+        enclosingCatchBlock: enclosingLabel,
+        exceptionType: type == CatchVariableType.exception ? exceptionTypeSource : null,
+        ignoreComments: commentSet.toList(),
+        isIntentionallyUnused: underscoreChecker.isIntentionallyUnused(name),
+        staticType: staticType,
+      );
+
+      declarations.add(declaration);
+      scopeTracker.registerVariable(declaration);
+    }
+
+    final exceptionParam = node.exceptionParameter;
+    if (exceptionParam != null) {
+      register(exceptionParam, CatchVariableType.exception);
+    }
+
+    final stackTraceParam = node.stackTraceParameter;
+    if (stackTraceParam != null) {
+      register(stackTraceParam, CatchVariableType.stackTrace);
+    }
+  }
+
+  void _registerPatternVariables(List<pattern_model.PatternVariable> variables) {
+    if (variables.isEmpty) {
+      return;
+    }
+
+    for (final variable in variables) {
+      declarations.add(variable);
+      scopeTracker.registerVariable(variable);
+    }
+  }
+
+  parameter_model.ParameterDeclaration? _createParameterDeclaration(
+    FormalParameter formal, {
+    required ScopeContext scope,
+    required String enclosingCallable,
+    required int requiredPosition,
+    required int optionalPosition,
+    required int namedPosition,
+  }) {
+    final baseParameter = formal is DefaultFormalParameter ? formal.parameter : formal;
+    final nameToken = _resolveParameterNameToken(baseParameter);
+    if (nameToken == null) {
+      return null;
+    }
+
+    final name = nameToken.lexeme;
+    if (name.isEmpty) {
+      return null;
+    }
+
+    final location = lineInfo.getLocation(nameToken.offset);
+    final isNamed = formal.isNamed;
+    final isOptionalPositional = formal.isOptionalPositional;
+    final parameterKind = isNamed
+        ? ParameterKind.named
+        : (isOptionalPositional ? ParameterKind.optionalPositional : ParameterKind.required);
+
+    final position = parameterKind == ParameterKind.named
+        ? namedPosition
+        : parameterKind == ParameterKind.optionalPositional
+            ? optionalPosition
+            : requiredPosition;
+
+    final defaultValue = formal is DefaultFormalParameter ? formal.defaultValue?.toSource() : null;
+    final isFieldInitializer = baseParameter is FieldFormalParameter || baseParameter is SuperFormalParameter;
+    final isRequired =
+        isNamed ? (formal is DefaultFormalParameter ? formal.requiredKeyword != null : false) : !isOptionalPositional;
+    final annotations = _collectParameterAnnotations(formal);
+    final ignoreComments = _collectParameterComments(formal);
+    String? staticType;
+    if (baseParameter is SimpleFormalParameter) {
+      staticType = baseParameter.type?.toSource();
+    } else if (baseParameter is FieldFormalParameter) {
+      staticType = baseParameter.type?.toSource();
+    } else if (baseParameter is FunctionTypedFormalParameter) {
+      staticType = baseParameter.returnType?.toSource();
+    }
+
+    return parameter_model.ParameterDeclaration(
+      id: _buildVariableId(scope, name),
+      name: name,
+      filePath: filePath,
+      lineNumber: location.lineNumber,
+      columnNumber: location.columnNumber - 1,
+      scope: scope,
+      mutability: Mutability.final_,
+      parameterKind: parameterKind,
+      position: position,
+      isRequired: isRequired,
+      enclosingCallable: enclosingCallable,
+      annotations: annotations,
+      ignoreComments: ignoreComments,
+      defaultValue: defaultValue,
+      staticType: staticType,
+      isFieldInitializer: isFieldInitializer,
+      isIntentionallyUnused: underscoreChecker.isIntentionallyUnused(name),
+    );
+  }
+
+  Token? _resolveParameterNameToken(FormalParameter parameter) {
+    final target = parameter is DefaultFormalParameter ? parameter.parameter : parameter;
+    Token? token = target.beginToken;
+    Token? lastIdentifier;
+
+    while (token != null) {
+      if (token.type == TokenType.EQ || token.type == TokenType.COLON) {
+        break;
+      }
+
+      if (token.type == TokenType.IDENTIFIER) {
+        final lexeme = token.lexeme;
+        if (lexeme != 'this' && lexeme != 'super') {
+          lastIdentifier = token;
+        }
+      }
+
+      if (identical(token, target.endToken)) {
+        break;
+      }
+
+      token = token.next;
+    }
+
+    return lastIdentifier;
+  }
+
+  List<String> _collectParameterAnnotations(FormalParameter parameter) {
+    final annotations = <String>[];
+    final seen = <String>{};
+
+    void addAll(List<String> values) {
+      for (final value in values) {
+        if (seen.add(value)) {
+          annotations.add(value);
+        }
+      }
+    }
+
+    addAll(_extractAnnotations(parameter.metadata));
+    if (parameter is DefaultFormalParameter) {
+      addAll(_extractAnnotations(parameter.parameter.metadata));
+    }
+
+    return annotations;
+  }
+
+  List<String> _collectParameterComments(FormalParameter parameter) {
+    final comments = <String>[];
+    final seen = <String>{};
+
+    void addAll(List<String> values) {
+      for (final value in values) {
+        if (seen.add(value)) {
+          comments.add(value);
+        }
+      }
+    }
+
+    addAll(_extractLeadingComments(parameter));
+    if (parameter is DefaultFormalParameter) {
+      addAll(_extractLeadingComments(parameter.parameter));
+    }
+
+    return comments;
+  }
+
+  ScopeContext _pushScopeForNode(
+    AstNode node,
+    ScopeType scopeType, {
+    String? enclosingDeclaration,
+  }) {
+    return scopeTracker.pushScope(
+      scopeType: scopeType,
+      filePath: filePath,
+      startLine: _lineNumber(node.offset),
+      endLine: _lineNumber(node.end),
+      enclosingDeclaration: enclosingDeclaration,
+    );
+  }
+
+  void _popScope(ScopeContext expected) {
+    scopeTracker.popScope();
+  }
+
+  int _lineNumber(int offset) {
+    if (offset < 0) {
+      return 1;
+    }
+    return lineInfo.getLocation(offset).lineNumber;
+  }
+
+  Mutability _resolveMutability(VariableDeclarationList list) {
+    if (list.isConst) {
+      return Mutability.const_;
+    }
+    if (list.isFinal) {
+      return Mutability.final_;
+    }
+    return Mutability.mutable;
+  }
+
+  Mutability _mutabilityFromPatternKeyword(Token keyword) {
+    final keywordValue = keyword.keyword;
+    if (keywordValue == Keyword.FINAL) {
+      return Mutability.final_;
+    }
+    return Mutability.mutable;
+  }
+
+  List<String> _extractAnnotations(NodeList<Annotation> metadata) {
+    final results = <String>[];
+    for (final annotation in metadata) {
+      final nameNode = annotation.name;
+      if (nameNode is PrefixedIdentifier) {
+        results.add('${nameNode.prefix.name}.${nameNode.identifier.name}');
+      } else {
+        results.add(nameNode.name);
+      }
+    }
+    return results;
+  }
+
+  List<String> _extractLeadingComments(AstNode node) {
+    final comments = <String>[];
+    Token? comment = node.beginToken.precedingComments;
+    while (comment != null) {
+      comments.add(comment.lexeme.trim());
+      comment = comment.next;
+    }
+    return comments;
+  }
+
+  variable_ref.VariableReference? _createTopLevelReference(
+    SimpleIdentifier identifier, {
+    ReferenceContext? overrideContext,
+  }) {
+    if (identifier.inDeclarationContext()) {
+      return null;
+    }
+
+    final element = identifier.element;
+    if (element == null) {
+      return null;
+    }
+
+    PropertyInducingElement? variableElement;
+    if (element is PropertyAccessorElement) {
+      variableElement = element.variable;
+    } else if (element is PropertyInducingElement) {
+      variableElement = element;
+    }
+
+    if (variableElement is! TopLevelVariableElement) {
+      return null;
+    }
+
+    final declarationPath = _getElementFilePath(variableElement);
+    if (declarationPath == null) {
+      return null;
+    }
+
+    final currentScope = scopeTracker.currentScope;
+    if (currentScope == null) {
+      return null;
+    }
+
+    final variableName = variableElement.name;
+    if (variableName == null || variableName.isEmpty) {
+      return null;
+    }
+
+    final variableId = _buildTopLevelVariableId(declarationPath, variableName);
+    final referenceType = _classifyReference(identifier);
+    final location = lineInfo.getLocation(identifier.offset);
+
+    return variable_ref.VariableReference(
+      id: _buildReferenceId(location.lineNumber, location.columnNumber - 1, variableId),
+      variableId: variableId,
+      filePath: filePath,
+      lineNumber: location.lineNumber,
+      columnNumber: location.columnNumber - 1,
+      referenceType: referenceType,
+      context: _determineReferenceContext(
+        identifier,
+        referenceType,
+        overrideContext: overrideContext,
+      ),
+      enclosingScope: currentScope,
+      isCapturedByClosure: false,
+    );
+  }
+
+  String? _getElementFilePath(Element element) {
+    final nonSynthetic = element.nonSynthetic;
+    final fragment = nonSynthetic.firstFragment;
+    final libraryFragment = fragment.libraryFragment;
+    final source = (libraryFragment ?? (fragment is LibraryFragment ? fragment : null))?.source;
+    if (source == null) {
+      return null;
+    }
+
+    final fullName = source.fullName;
+    if (fullName.isEmpty) {
+      return null;
+    }
+
+    return fullName.replaceAll(r'\', '/');
+  }
+
+  String _buildTopLevelVariableId(String declarationFilePath, String variableName) {
+    final normalizedPath = declarationFilePath.replaceAll(r'\', '/');
+    return '$normalizedPath#topLevel#$variableName';
+  }
+
+  String _buildVariableId(ScopeContext scope, String variableName) {
+    return '${scope.id}#$variableName';
+  }
+
+  String _buildReferenceId(int line, int column, String variableId) {
+    return '$filePath#$line#$column#$variableId';
+  }
+
+  ReferenceType _classifyReference(SimpleIdentifier identifier) {
+    final hasGetter = identifier.inGetterContext();
+    final hasSetter = identifier.inSetterContext();
+
+    if (hasGetter && hasSetter) {
+      return ReferenceType.readWrite;
+    }
+    if (hasSetter) {
+      return ReferenceType.write;
+    }
+    return ReferenceType.read;
+  }
+
+  ReferenceContext _determineReferenceContext(
+    SimpleIdentifier identifier,
+    ReferenceType referenceType, {
+    ReferenceContext? overrideContext,
+  }) {
+    if (overrideContext != null) {
+      return overrideContext;
+    }
+
+    if (referenceType != ReferenceType.read) {
+      return ReferenceContext.assignment;
+    }
+
+    AstNode? ancestor = identifier.parent;
+    while (ancestor != null) {
+      if (ancestor is ReturnStatement) {
+        return ReferenceContext.returnStatement;
+      }
+      ancestor = ancestor.parent;
+    }
+
+    return ReferenceContext.expression;
+  }
+
+  bool _isCapturedByClosure(ScopeContext currentScope, ScopeContext declarationScope) {
+    if (currentScope.id == declarationScope.id) {
+      return false;
+    }
+
+    // Walk up the scope chain from current to declaration to see if any intermediate scope is a closure
+    var scope = currentScope;
+    while (scope.id != declarationScope.id) {
+      if (scope.scopeType == ScopeType.closure) {
+        return true;
+      }
+
+      final parentId = scope.parentScopeId;
+      if (parentId == null) {
+        // Reached root without finding declaration scope
+        return false;
+      }
+
+      final parentScope = scopeTracker.findScopeById(parentId);
+      if (parentScope == null) {
+        // Parent scope not found - assume not captured
+        return false;
+      }
+
+      scope = parentScope;
+    }
+
+    return false;
+  }
+
+  String _buildCatchBlockLabel(CatchClause node) {
+    final location = lineInfo.getLocation(node.offset);
+    return 'catch@${location.lineNumber}:${location.columnNumber - 1}';
+  }
+
+  String _buildSwitchCaseLabel(SwitchPatternCase node) {
+    final location = lineInfo.getLocation(node.keyword.offset);
+    return 'switchCase@${location.lineNumber}:${location.columnNumber - 1}';
+  }
+
+  String _buildMethodName(MethodDeclaration node) {
+    final parent = node.parent;
+    final buffer = StringBuffer();
+    if (parent is ClassDeclaration) {
+      buffer
+        ..write(parent.name.lexeme)
+        ..write('.');
+    } else if (parent is ExtensionDeclaration && parent.name != null) {
+      buffer
+        ..write(parent.name!.lexeme)
+        ..write('.');
+    }
+    buffer.write(node.name.lexeme);
+    return buffer.toString();
+  }
+
+  String _buildClosureName(FunctionBody body) {
+    final location = lineInfo.getLocation(body.offset);
+    final index = _closureCounter++;
+    return 'closure#$index@${location.lineNumber}:${location.columnNumber - 1}';
+  }
+}
+
 /// Visitor that extracts class references from an AST.
 class _ClassReferenceVisitor extends RecursiveAstVisitor<void> {
   final String filePath;
@@ -1625,24 +2668,6 @@ class _ClassReferenceVisitor extends RecursiveAstVisitor<void> {
       }
     }
     super.visitImplementsClause(node);
-  }
-
-  @override
-  void visitWithClause(WithClause node) {
-    for (final mixin in node.mixinTypes) {
-      final className = _extractClassName(mixin.toString());
-      if (className != null) {
-        references.add(
-          ClassReference(
-            className: className,
-            sourceFile: filePath,
-            lineNumber: lineInfo.getLocation(mixin.offset).lineNumber,
-            kind: ReferenceKind.inheritance,
-          ),
-        );
-      }
-    }
-    super.visitWithClause(node);
   }
 
   @override
@@ -1859,6 +2884,12 @@ class FileAnalysisResult {
   /// Method/function invocations found in this file (T018).
   final List<invocation_model.MethodInvocation> methodInvocations;
 
+  /// Variable declarations collected for unused-variable analysis (US1).
+  final List<variable_model.VariableDeclaration> variableDeclarations;
+
+  /// Variable references collected for unused-variable analysis (US1).
+  final List<variable_ref.VariableReference> variableReferences;
+
   FileAnalysisResult({
     required this.filePath,
     required this.declarations,
@@ -1866,6 +2897,10 @@ class FileAnalysisResult {
     this.hasDynamicTypeUsage = false,
     List<method_model.MethodDeclaration>? methodDeclarations,
     List<invocation_model.MethodInvocation>? methodInvocations,
+    List<variable_model.VariableDeclaration>? variableDeclarations,
+    List<variable_ref.VariableReference>? variableReferences,
   })  : methodDeclarations = methodDeclarations ?? [],
-        methodInvocations = methodInvocations ?? [];
+        methodInvocations = methodInvocations ?? [],
+        variableDeclarations = variableDeclarations ?? [],
+        variableReferences = variableReferences ?? [];
 }

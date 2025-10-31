@@ -2,6 +2,9 @@ import 'class_declaration.dart';
 import 'class_reference.dart';
 import 'method_declaration.dart';
 import 'method_invocation.dart';
+import 'variable_declaration.dart';
+import 'variable_reference.dart';
+import 'variable_types.dart';
 
 /// Represents the complete reference graph of the codebase.
 ///
@@ -39,6 +42,18 @@ class ReferenceGraph {
   /// Value: List of all invocations to that method
   final Map<String, List<MethodInvocation>> methodInvocations;
 
+  /// All variable declarations tracked for unused-variable analysis.
+  ///
+  /// Key: declaration id (filePath#scopeId#name)
+  /// Value: VariableDeclaration
+  final Map<String, VariableDeclaration> variableDeclarations;
+
+  /// All variable references encountered during analysis.
+  ///
+  /// Key: variableId
+  /// Value: List of references to that variable
+  final Map<String, List<VariableReference>> variableReferences;
+
   /// String interning pool for file paths (T071).
   ///
   /// File paths are repeated many times (once per reference), so we intern
@@ -52,15 +67,21 @@ class ReferenceGraph {
     required this.references,
     Map<String, MethodDeclaration>? methodDeclarations,
     Map<String, List<MethodInvocation>>? methodInvocations,
+    Map<String, VariableDeclaration>? variableDeclarations,
+    Map<String, List<VariableReference>>? variableReferences,
   })  : methodDeclarations = methodDeclarations ?? {},
-        methodInvocations = methodInvocations ?? {};
+        methodInvocations = methodInvocations ?? {},
+        variableDeclarations = variableDeclarations ?? {},
+        variableReferences = variableReferences ?? {};
 
   /// Creates an empty reference graph.
   ReferenceGraph.empty()
       : declarations = {},
         references = {},
         methodDeclarations = {},
-        methodInvocations = {};
+        methodInvocations = {},
+        variableDeclarations = {},
+        variableReferences = {};
 
   /// Interns a file path to reduce memory usage (T071).
   ///
@@ -104,8 +125,7 @@ class ReferenceGraph {
     final internedDeclarationPath = declarationPath != null ? _internPath(declarationPath) : null;
 
     // Create a new invocation with the interned path if different
-    final needsCopy =
-        internedPath != invocation.filePath || internedDeclarationPath != invocation.declarationFilePath;
+    final needsCopy = internedPath != invocation.filePath || internedDeclarationPath != invocation.declarationFilePath;
     final internedInvocation = needsCopy
         ? MethodInvocation(
             methodName: invocation.methodName,
@@ -123,6 +143,32 @@ class ReferenceGraph {
     methodInvocations.putIfAbsent(invocation.methodName, () => []).add(internedInvocation);
   }
 
+  /// Adds a variable declaration to the graph.
+  void addVariableDeclaration(VariableDeclaration declaration) {
+    variableDeclarations[declaration.id] = declaration;
+  }
+
+  /// Adds a variable reference to the graph, interning file paths for memory efficiency.
+  void addVariableReference(VariableReference reference) {
+    final internedPath = _internPath(reference.filePath);
+    final needsCopy = internedPath != reference.filePath;
+    final internedReference = needsCopy
+        ? VariableReference(
+            id: reference.id,
+            variableId: reference.variableId,
+            filePath: internedPath,
+            lineNumber: reference.lineNumber,
+            columnNumber: reference.columnNumber,
+            referenceType: reference.referenceType,
+            context: reference.context,
+            enclosingScope: reference.enclosingScope,
+            isCapturedByClosure: reference.isCapturedByClosure,
+          )
+        : reference;
+
+    variableReferences.putIfAbsent(reference.variableId, () => []).add(internedReference);
+  }
+
   /// Returns all declarations that have no references.
   ///
   /// This is the core unused detection logic.
@@ -133,6 +179,21 @@ class ReferenceGraph {
       return refs.isEmpty;
     }).toList()
       ..sort((a, b) => a.uniqueId.compareTo(b.uniqueId)); // Deterministic order
+  }
+
+  /// Returns all variable declarations with zero read references (unused variables).
+  List<VariableDeclaration> getUnusedVariableDeclarations() {
+    return variableDeclarations.values.where((declaration) {
+      final refs = variableReferences[declaration.id] ?? const [];
+      final hasReadReference =
+          refs.any((ref) => ref.referenceType == ReferenceType.read || ref.referenceType == ReferenceType.readWrite);
+      return !hasReadReference;
+    }).toList()
+      ..sort((a, b) {
+        final pathCompare = a.filePath.compareTo(b.filePath);
+        if (pathCompare != 0) return pathCompare;
+        return a.lineNumber.compareTo(b.lineNumber);
+      });
   }
 
   /// Returns all method declarations that have no invocations (T007).
@@ -180,8 +241,7 @@ class ReferenceGraph {
 
       final hasMatchingInvocation = invocations.any((invocation) {
         // Require matching declaration file when available to avoid cross-file collisions
-        if (invocation.declarationFilePath != null &&
-            invocation.declarationFilePath != declaration.filePath) {
+        if (invocation.declarationFilePath != null && invocation.declarationFilePath != declaration.filePath) {
           return false;
         }
 
@@ -191,8 +251,8 @@ class ReferenceGraph {
         }
 
         final matchesContainingClass = invocation.targetClass == declaration.containingClass;
-        final matchesExtensionTarget = declaration.extensionTargetType != null &&
-            invocation.targetClass == declaration.extensionTargetType;
+        final matchesExtensionTarget =
+            declaration.extensionTargetType != null && invocation.targetClass == declaration.extensionTargetType;
 
         return matchesContainingClass || matchesExtensionTarget;
       });
@@ -227,6 +287,8 @@ class ReferenceGraph {
     // T092: Count dynamic invocations
     final dynamicCount = methodInvocations.values.expand((invs) => invs).where((inv) => inv.isDynamic).length;
 
+    final totalVariableRefs = variableReferences.values.fold<int>(0, (sum, refs) => sum + refs.length);
+
     return GraphStatistics(
       totalDeclarations: declarations.length,
       totalReferences: references.values.fold(0, (sum, refs) => sum + refs.length),
@@ -236,6 +298,9 @@ class ReferenceGraph {
       totalMethodInvocations: methodInvocations.values.fold(0, (sum, invs) => sum + invs.length),
       unusedMethodCount: getUnusedMethodDeclarations().length,
       dynamicInvocationCount: dynamicCount, // T092
+      totalVariableDeclarations: variableDeclarations.length,
+      totalVariableReferences: totalVariableRefs,
+      unusedVariableCount: getUnusedVariableDeclarations().length,
     );
   }
 
@@ -247,6 +312,14 @@ class ReferenceGraph {
     for (final refs in references.values) {
       for (final ref in refs) {
         files.add(ref.sourceFile);
+      }
+    }
+    for (final variable in variableDeclarations.values) {
+      files.add(variable.filePath);
+    }
+    for (final refs in variableReferences.values) {
+      for (final ref in refs) {
+        files.add(ref.filePath);
       }
     }
     return files.length;
@@ -279,6 +352,15 @@ class GraphStatistics {
   /// Number of dynamic invocations detected (T092).
   final int dynamicInvocationCount;
 
+  /// Total variable declarations tracked.
+  final int totalVariableDeclarations;
+
+  /// Total variable references encountered.
+  final int totalVariableReferences;
+
+  /// Number of variable declarations without read references.
+  final int unusedVariableCount;
+
   /// Percentage of dynamic invocations (T092).
   double get dynamicInvocationPercentage {
     if (totalMethodInvocations == 0) return 0.0;
@@ -297,5 +379,8 @@ class GraphStatistics {
     this.totalMethodInvocations = 0,
     this.unusedMethodCount = 0,
     this.dynamicInvocationCount = 0, // T092
+    this.totalVariableDeclarations = 0,
+    this.totalVariableReferences = 0,
+    this.unusedVariableCount = 0,
   });
 }

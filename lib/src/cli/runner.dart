@@ -9,7 +9,9 @@ import '../services/unused_detector.dart';
 import '../services/analysis_options_reader.dart';
 import '../services/analyzer_config_reader.dart';
 import '../models/ignore_pattern.dart';
+import '../models/ignore_configuration.dart';
 import '../models/analysis_report.dart';
+import '../models/variable_types.dart';
 import '../utils/dart_analyzer_wrapper.dart';
 
 /// Finds the project root by walking up the directory tree to find pubspec.yaml.
@@ -89,12 +91,15 @@ Future<int> run(List<String> args) async {
     // Read analysis_options.yaml for exclude patterns
     final analysisOptions = await AnalysisOptionsReader.read(projectRoot);
 
-    // Read flutter_prunekit.yaml for custom ignore patterns (T045-T046)
+    // Read flutter_dead_code.yaml for custom ignore patterns (T045-T046)
     final analyzerConfig = await AnalyzerConfigReader.read(projectRoot);
+
+    // T092: Load ignore configuration for variables/parameters
+    final ignoreConfig = await IgnoreConfiguration.load(projectRoot);
 
     final excludePatterns = <String>[
       ...?analysisOptions?.excludePatterns,
-      // Add patterns from flutter_prunekit.yaml (T046)
+      // Add patterns from flutter_dead_code.yaml (T046)
       ...?analyzerConfig?.excludePatterns.map((p) => p.pattern),
       ...arguments.excludePatterns,
     ];
@@ -153,6 +158,7 @@ Future<int> run(List<String> args) async {
     // Detect unused classes and methods with shared detector
     final detector = UnusedDetector(
       ignorePatterns: ignorePatterns,
+      ignoreConfiguration: ignoreConfig, // T092: Pass ignore configuration
       verbose: arguments.verbose && !arguments.quiet, // T066: Pass verbose flag
     );
 
@@ -163,6 +169,7 @@ Future<int> run(List<String> args) async {
 
     final unusedClasses = detector.findUnused(graph);
     final unusedMethods = detector.findUnusedMethods(graph);
+    final unusedVariables = detector.detectUnusedVariables(graph);
 
     if (!arguments.quiet && arguments.verbose) {
       print('─────────────────────────────────\n');
@@ -176,6 +183,7 @@ Future<int> run(List<String> args) async {
       graph,
       unusedClasses,
       unusedMethods,
+      unusedVariables: unusedVariables,
     );
 
     // Calculate duration
@@ -183,6 +191,52 @@ Future<int> run(List<String> args) async {
 
     // Get statistics (T092: needed for dynamic warning check)
     final stats = graph.getStatistics();
+
+    // Variable totals by type
+    final totalVariables = graph.variableDeclarations.values.length;
+    var totalLocalVariables = 0;
+    var totalParameterVariables = 0;
+    var totalTopLevelVariables = 0;
+    var totalCatchVariables = 0;
+
+    for (final declaration in graph.variableDeclarations.values) {
+      switch (declaration.variableType) {
+        case VariableType.local:
+          totalLocalVariables++;
+          break;
+        case VariableType.parameter:
+          totalParameterVariables++;
+          break;
+        case VariableType.topLevel:
+          totalTopLevelVariables++;
+          break;
+        case VariableType.catchClause:
+          totalCatchVariables++;
+          break;
+      }
+    }
+
+    var unusedLocalVariables = 0;
+    var unusedParameterVariables = 0;
+    var unusedTopLevelVariables = 0;
+    var unusedCatchVariables = 0;
+
+    for (final declaration in unusedVariables) {
+      switch (declaration.variableType) {
+        case VariableType.local:
+          unusedLocalVariables++;
+          break;
+        case VariableType.parameter:
+          unusedParameterVariables++;
+          break;
+        case VariableType.topLevel:
+          unusedTopLevelVariables++;
+          break;
+        case VariableType.catchClause:
+          unusedCatchVariables++;
+          break;
+      }
+    }
 
     // Collect all warnings from analysis
     final allWarnings = <AnalysisWarning>[
@@ -206,10 +260,11 @@ Future<int> run(List<String> args) async {
 
     // Create report (T035: includes unused methods)
     final report = AnalysisReport(
-      version: '2.0.0',
+      version: '1.0.0',
       timestamp: DateTime.now().toIso8601String(),
       unusedClasses: arguments.onlyMethods ? [] : unusedClasses, // Skip classes if --only-methods
       unusedMethods: unusedMethods, // T035: Add method reporting
+      unusedVariables: unusedVariables,
       summary: AnalysisSummary(
         totalFiles: filesToAnalyze.length,
         totalClasses: stats.totalDeclarations,
@@ -222,6 +277,19 @@ Future<int> run(List<String> args) async {
         durationMs: duration.inMilliseconds,
         totalMethods: graph.methodDeclarations.length, // T035
         unusedMethodCount: unusedMethods.length, // T035
+        totalVariables: totalVariables,
+        unusedVariableCount: unusedVariables.length,
+        totalLocalVariables: totalLocalVariables,
+        unusedLocalVariableCount: unusedLocalVariables,
+        totalParameterVariables: totalParameterVariables,
+        unusedParameterVariableCount: unusedParameterVariables,
+        totalTopLevelVariables: totalTopLevelVariables,
+        unusedTopLevelVariableCount: unusedTopLevelVariables,
+        totalCatchVariables: totalCatchVariables,
+        unusedCatchVariableCount: unusedCatchVariables,
+        variablesExplicitlyIgnored: unusedStats.variablesIgnoredByExplicitIgnore,
+        variablesIgnoredByConvention: unusedStats.variablesIgnoredByConvention,
+        variablesIgnoredByPattern: unusedStats.variablesIgnoredByPattern,
       ),
       warnings: allWarnings,
     );

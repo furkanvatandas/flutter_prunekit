@@ -1,6 +1,7 @@
 /// Flutter Dead Code Analyzer
 ///
-/// A static analysis tool for detecting unused classes in Dart and Flutter projects.
+/// A static analysis tool for detecting unused classes, methods, and variables
+/// in Dart and Flutter projects.
 ///
 /// ## Usage
 ///
@@ -12,6 +13,8 @@
 ///   final report = await analyzer.analyze('/path/to/project');
 ///
 ///   print('Found ${report.unusedClasses.length} unused classes');
+///   print('Found ${report.unusedMethods.length} unused methods');
+///   print('Found ${report.unusedVariables.length} unused variables');
 /// }
 /// ```
 library;
