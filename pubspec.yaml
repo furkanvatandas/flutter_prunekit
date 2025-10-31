@@ -1,6 +1,6 @@
 name: flutter_prunekit
 description: Ship leaner Dart & Flutter apps by removing unused classes, methods, and variables.
-version: 2.1.0
+version: 2.1.1
 homepage: https://github.com/furkanvatandas/flutter_prunekit
 repository: https://github.com/furkanvatandas/flutter_prunekit
 issue_tracker: https://github.com/furkanvatandas/flutter_prunekit/issues

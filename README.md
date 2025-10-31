@@ -1,7 +1,7 @@
 # Flutter PruneKit
 
 <p align="center">
-  <img src="assets/prunekit_image.png" alt="Flutter Dead Code Hero" width="100%" />
+  <img src="https://github.com/furkanvatandas/flutter_prunekit/blob/main/assets/prunekit_image.png?raw=true" alt="Flutter PruneKit" width="100%" >
 </p>
 
 [![Pub Version](https://img.shields.io/pub/v/flutter_prunekit.svg)](https://pub.dev/packages/flutter_prunekit)
