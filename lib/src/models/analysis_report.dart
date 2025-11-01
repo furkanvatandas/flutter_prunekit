@@ -238,7 +238,7 @@ enum WarningType {
   /// Syntax error in a Dart file (prevents AST parsing).
   syntaxError,
 
-  /// Configuration file error (flutter_dead_code.yaml).
+  /// Configuration file error (flutter_prunekit.yaml).
   configError,
 
   /// Invalid ignore pattern (glob syntax error).

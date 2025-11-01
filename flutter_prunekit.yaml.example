@@ -1,5 +1,5 @@
-# Example configuration for flutter_dead_code
-# Copy this file to flutter_dead_code.yaml in your project root
+# Example configuration for flutter_prunekit
+# Copy this file to flutter_prunekit.yaml in your project root
 
 # Patterns to exclude from analysis
 # Supports glob patterns (**, *, ?)
@@ -121,7 +121,7 @@ check_build_context_parameters: false
 
 # NOTE: This config file has MEDIUM priority in the ignore hierarchy:
 # 1. @keepUnused annotation (HIGHEST - always wins)
-# 2. flutter_dead_code.yaml config file (MEDIUM - this file)
+# 2. flutter_prunekit.yaml config file (MEDIUM - this file)
 # 3. --exclude CLI flag (LOWEST - can be overridden by above)
 #
 # For temporary exclusions, prefer CLI flags:

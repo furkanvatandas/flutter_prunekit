@@ -12,20 +12,36 @@ class OutputFormatter {
   static String format(
     AnalysisReport report, {
     required bool quiet,
-    bool onlyMethods = false,
+    bool includeTypes = true,
+    bool includeMethods = true,
+    bool includeVariables = true,
     bool asJson = false,
   }) {
     if (asJson) {
       return formatJson(
         report,
-        onlyMethods: onlyMethods,
+        includeTypes: includeTypes,
+        includeMethods: includeMethods,
+        includeVariables: includeVariables,
       );
     }
-    return formatHuman(report, quiet: quiet, onlyMethods: onlyMethods);
+    return formatHuman(
+      report,
+      quiet: quiet,
+      includeTypes: includeTypes,
+      includeMethods: includeMethods,
+      includeVariables: includeVariables,
+    );
   }
 
   /// Formats the report for human reading.
-  static String formatHuman(AnalysisReport report, {required bool quiet, bool onlyMethods = false}) {
+  static String formatHuman(
+    AnalysisReport report, {
+    required bool quiet,
+    bool includeTypes = true,
+    bool includeMethods = true,
+    bool includeVariables = true,
+  }) {
     final buffer = StringBuffer();
 
     if (!quiet) {
@@ -33,44 +49,45 @@ class OutputFormatter {
       buffer.writeln();
     }
 
-    // Skip class output if --only-methods
-    if (!onlyMethods && report.unusedClasses.isEmpty) {
-      buffer.writeln(AnsiStyles.green('✓ No unused classes found!'));
-    } else if (!onlyMethods) {
-      // Group classes by kind
-      final groupedByKind = <ClassKind, List<ClassDeclaration>>{};
-      for (final unusedClass in report.unusedClasses) {
-        groupedByKind.putIfAbsent(unusedClass.kind, () => []).add(unusedClass);
-      }
-
-      // Summary header
-      final classLabel = report.unusedClasses.length == 1 ? 'declaration' : 'declarations';
-      buffer.writeln(
-        AnsiStyles.yellow('⚠ Found ${report.unusedClasses.length} unused class $classLabel:'),
-      );
-      buffer.writeln();
-
-      // Show counts by kind
-      final sortedKinds = groupedByKind.keys.toList()..sort((a, b) => a.name.compareTo(b.name));
-
-      for (final kind in sortedKinds) {
-        final items = groupedByKind[kind]!;
-        final kindColor = _getKindColor(kind);
-
-        buffer.writeln(kindColor('${_getKindLabel(kind)}: ${items.length}'));
-        buffer.writeln();
-
-        for (final unusedClass in items) {
-          buffer.writeln('  ${AnsiStyles.gray('${unusedClass.filePath}:${unusedClass.lineNumber}')}');
-          buffer.writeln('    ${AnsiStyles.white(unusedClass.name)}');
+    if (includeTypes) {
+      if (report.unusedClasses.isEmpty) {
+        buffer.writeln(AnsiStyles.green('✓ No unused classes found!'));
+      } else {
+        // Group classes by kind
+        final groupedByKind = <ClassKind, List<ClassDeclaration>>{};
+        for (final unusedClass in report.unusedClasses) {
+          groupedByKind.putIfAbsent(unusedClass.kind, () => []).add(unusedClass);
         }
 
+        // Summary header
+        final classLabel = report.unusedClasses.length == 1 ? 'declaration' : 'declarations';
+        buffer.writeln(
+          AnsiStyles.yellow('⚠ Found ${report.unusedClasses.length} unused class $classLabel:'),
+        );
         buffer.writeln();
+
+        // Show counts by kind
+        final sortedKinds = groupedByKind.keys.toList()..sort((a, b) => a.name.compareTo(b.name));
+
+        for (final kind in sortedKinds) {
+          final items = groupedByKind[kind]!;
+          final kindColor = _getKindColor(kind);
+
+          buffer.writeln(kindColor('${_getKindLabel(kind)}: ${items.length}'));
+          buffer.writeln();
+
+          for (final unusedClass in items) {
+            buffer.writeln('  ${AnsiStyles.gray('${unusedClass.filePath}:${unusedClass.lineNumber}')}');
+            buffer.writeln('    ${AnsiStyles.white(unusedClass.name)}');
+          }
+
+          buffer.writeln();
+        }
       }
     }
 
     // Show unused methods (T035, T045 - Phase 5: static method support, T055 - Phase 6: extension method support)
-    if (report.unusedMethods.isNotEmpty) {
+    if (includeMethods && report.unusedMethods.isNotEmpty) {
       // Group methods by type and class
       final instanceMethodsByClass = <String, List<MethodDeclaration>>{};
       final staticMethodsByClass = <String, List<MethodDeclaration>>{};
@@ -202,7 +219,7 @@ class OutputFormatter {
     }
 
     // Show unused variables (US1)
-    if (report.unusedVariables.isNotEmpty) {
+    if (includeVariables && report.unusedVariables.isNotEmpty) {
       buffer.writeln(AnsiStyles.yellow('⚠ Found ${report.unusedVariables.length} unused variable(s):'));
       buffer.writeln();
 
@@ -245,19 +262,26 @@ class OutputFormatter {
       buffer.writeln();
 
       // Main statistics
-      buffer
-          .writeln('  ${AnsiStyles.bold('Files analyzed:')} ${AnsiStyles.white(report.summary.totalFiles.toString())}');
       buffer.writeln(
-          '  ${AnsiStyles.bold('Type declarations analyzed:')} ${AnsiStyles.white(report.summary.totalClasses.toString())}');
+        '  ${AnsiStyles.bold('Files analyzed:')} ${AnsiStyles.white(report.summary.totalFiles.toString())}',
+      );
 
-      final unusedColor = report.summary.unusedCount > 0 ? AnsiStyles.yellow : AnsiStyles.green;
-      buffer.writeln('  ${AnsiStyles.bold('Unused type declarations:')} ${unusedColor(report.summary.unusedCount.toString())}');
+      if (includeTypes) {
+        buffer.writeln(
+          '  ${AnsiStyles.bold('Type declarations analyzed:')} ${AnsiStyles.white(report.summary.totalClasses.toString())}',
+        );
 
-      final usageRate = (report.summary.usageRate * 100).toStringAsFixed(1);
-      buffer.writeln('  ${AnsiStyles.bold('Type usage rate:')} ${AnsiStyles.green('$usageRate%')}');
+        final unusedColor = report.summary.unusedCount > 0 ? AnsiStyles.yellow : AnsiStyles.green;
+        buffer.writeln(
+          '  ${AnsiStyles.bold('Unused type declarations:')} ${unusedColor(report.summary.unusedCount.toString())}',
+        );
+
+        final usageRate = (report.summary.usageRate * 100).toStringAsFixed(1);
+        buffer.writeln('  ${AnsiStyles.bold('Type usage rate:')} ${AnsiStyles.green('$usageRate%')}');
+      }
 
       // Show method statistics if methods were analyzed (T035)
-      if (report.summary.totalMethods > 0) {
+      if (includeMethods && report.summary.totalMethods > 0) {
         buffer.writeln();
         buffer.writeln(
             '  ${AnsiStyles.bold('Methods analyzed:')} ${AnsiStyles.white(report.summary.totalMethods.toString())}');
@@ -270,7 +294,7 @@ class OutputFormatter {
         buffer.writeln('  ${AnsiStyles.bold('Method usage rate:')} ${AnsiStyles.green('$methodUsageRate%')}');
       }
 
-      if (report.summary.totalVariables > 0) {
+      if (includeVariables && report.summary.totalVariables > 0) {
         buffer.writeln();
         buffer.writeln(
             '  ${AnsiStyles.bold('Variables analyzed:')} ${AnsiStyles.white(report.summary.totalVariables.toString())}');
@@ -281,7 +305,6 @@ class OutputFormatter {
 
         final variableUsageRate = (report.summary.variableUsageRate * 100).toStringAsFixed(1);
         buffer.writeln('  ${AnsiStyles.bold('Variable usage rate:')} ${AnsiStyles.green('$variableUsageRate%')}');
-
       }
 
       // Show exclusion details if any files were excluded
@@ -340,15 +363,22 @@ class OutputFormatter {
   }
 
   /// Formats the report as JSON.
-  static String formatJson(AnalysisReport report, {bool onlyMethods = false}) {
+  static String formatJson(
+    AnalysisReport report, {
+    bool includeTypes = true,
+    bool includeMethods = true,
+    bool includeVariables = true,
+  }) {
     final map = <String, dynamic>{
       'version': report.version,
       'timestamp': report.timestamp,
       'exitCode': report.exitCode,
       'unusedClasses':
-          onlyMethods ? <Map<String, dynamic>>[] : report.unusedClasses.map(_classDeclarationToJson).toList(),
-      'unusedMethods': report.unusedMethods.map(_methodDeclarationToJson).toList(),
-      'unusedVariables': report.unusedVariables.map(_variableDeclarationToJson).toList(),
+          includeTypes ? report.unusedClasses.map(_classDeclarationToJson).toList() : <Map<String, dynamic>>[],
+      'unusedMethods':
+          includeMethods ? report.unusedMethods.map(_methodDeclarationToJson).toList() : <Map<String, dynamic>>[],
+      'unusedVariables':
+          includeVariables ? report.unusedVariables.map(_variableDeclarationToJson).toList() : <Map<String, dynamic>>[],
       'summary': _summaryToJson(report.summary),
       'warnings': report.warnings.map(_warningToJson).toList(),
     };

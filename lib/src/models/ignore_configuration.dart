@@ -34,11 +34,11 @@ class IgnoreConfiguration {
     this.checkBuildContextParameters = false,
   });
 
-  /// Loads ignore configuration from flutter_dead_code.yaml in the project root.
+  /// Loads ignore configuration from flutter_prunekit.yaml in the project root.
   ///
   /// Returns null if the file doesn't exist or parsing fails.
   static Future<IgnoreConfiguration?> load(String projectRoot) async {
-    final configFile = File('$projectRoot/flutter_dead_code.yaml');
+    final configFile = File('$projectRoot/flutter_prunekit.yaml');
 
     if (!await configFile.exists()) {
       return null;

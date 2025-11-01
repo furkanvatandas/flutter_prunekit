@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+# [2.2.0]
+
+### Added
+
+- Category-scoped analysis switches: `--only-types`, `--only-methods`, and `--only-variables` let you focus reports on a single surface or mix-and-match combinations for custom scans.
+
+### Changed
+
+- CLI workflow now runs through an explicit subcommand: use `flutter_prunekit unused_code [...]` for all analyses, with updated help/usage messaging and README guidance.
+- Default configuration filename renamed to `flutter_prunekit.yaml`; all loaders, fixtures, and documentation now look for the new name.
+- Quick Start documentation now integrates the configuration walkthrough and highlights exclusion patterns in a single, action-oriented section.
+
 ## [2.1.0]
 
 #### What's New

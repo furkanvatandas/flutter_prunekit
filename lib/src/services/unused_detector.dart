@@ -50,7 +50,7 @@ class UnusedDetector {
   ///
   /// Applies ignore pattern priority per T0A3:
   /// 1. @keepUnused annotation (highest priority)
-  /// 2. flutter_dead_code.yaml config patterns
+  /// 2. flutter_prunekit.yaml config patterns
   /// 3. --exclude CLI flag patterns
   bool _shouldIgnore(model.ClassDeclaration declaration) {
     // Check annotation-based ignoring (highest priority)
@@ -154,7 +154,7 @@ class UnusedDetector {
   ///
   /// Applies ignore pattern priority:
   /// 1. @keepUnused annotation (already checked in ReferenceGraph)
-  /// 2. flutter_dead_code.yaml config patterns for methods
+  /// 2. flutter_prunekit.yaml config patterns for methods
   /// 3. --exclude CLI flag patterns
   ///
   /// When verbose=true, prints diagnostic information about why methods are ignored.

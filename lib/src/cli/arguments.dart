@@ -1,6 +1,6 @@
 import 'package:args/args.dart';
 
-/// Parses command-line arguments for the flutter_prunekit tool.
+/// Parses command-line arguments for the flutter_dead_code tool.
 class Arguments {
   /// The root path(s) to analyze.
   final List<String> paths;
@@ -29,13 +29,19 @@ class Arguments {
   /// Whether to show version.
   final bool version;
 
-  /// Whether to analyze only methods (not classes).
+  /// Whether to analyze only functions and methods.
   final bool onlyMethods;
+
+  /// Whether to analyze only classes, enums, mixins, and extensions.
+  final bool onlyTypes;
+
+  /// Whether to analyze only variables and parameters.
+  final bool onlyVariables;
 
   /// Whether to output the report in JSON format.
   final bool json;
 
-  /// Creates the parsed representation of CLI flags for `flutter_prunekit`.
+  /// Creates the parsed representation of CLI flags for `flutter_dead_code`.
   Arguments({
     required this.paths,
     required this.excludePatterns,
@@ -46,7 +52,9 @@ class Arguments {
     required this.verbose,
     required this.help,
     required this.version,
+    required this.onlyTypes,
     required this.onlyMethods,
+    required this.onlyVariables,
     required this.json,
   });
 
@@ -83,7 +91,9 @@ class Arguments {
         verbose: results.flag('verbose'),
         help: results.flag('help'),
         version: results.flag('version'),
+        onlyTypes: results.flag('only-types'),
         onlyMethods: results.flag('only-methods'),
+        onlyVariables: results.flag('only-variables'),
         json: results.flag('json'),
       );
     } on FormatException {
@@ -147,7 +157,17 @@ class Arguments {
       ..addFlag(
         'only-methods',
         negatable: false,
-        help: 'Analyze only methods/functions (not classes)',
+        help: 'Analyze only functions and methods',
+      )
+      ..addFlag(
+        'only-types',
+        negatable: false,
+        help: 'Analyze only classes, enums, mixins, and extensions',
+      )
+      ..addFlag(
+        'only-variables',
+        negatable: false,
+        help: 'Analyze only variables and parameters',
       )
       ..addFlag(
         'json',
@@ -162,7 +182,7 @@ class Arguments {
     return '''
 Detect unused Dart and Flutter classes, methods, and variables in your codebase.
 
-Usage: flutter_prunekit [options]
+Usage: flutter_dead_code unused_code [options]
 
 Options:
 ${parser.usage}
@@ -173,14 +193,17 @@ Exit Codes:
   2 - Partial analysis completed with warnings
 
 Examples:
-  flutter_prunekit
-  flutter_prunekit --path lib --path test
-  flutter_prunekit --exclude 'lib/legacy/**'
+  flutter_dead_code unused_code
+  flutter_dead_code unused_code --path lib --path test
+  flutter_dead_code unused_code --exclude 'lib/legacy/**'
+  flutter_dead_code unused_code --only-types
+  flutter_dead_code unused_code --only-methods
+  flutter_dead_code unused_code --only-variables
 ''';
   }
 
   /// Gets the version string.
   static String getVersion() {
-    return 'flutter_prunekit version 2.1.0';
+    return 'flutter_dead_code version 2.2.0';
   }
 }

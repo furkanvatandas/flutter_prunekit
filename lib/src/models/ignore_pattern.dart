@@ -94,7 +94,7 @@ class IgnorePattern {
   ///
   /// Higher priority patterns take precedence:
   /// - Annotation (@keepUnused): priority 3
-  /// - Config file (flutter_dead_code.yaml): priority 2
+  /// - Config file (flutter_prunekit.yaml): priority 2
   /// - CLI flag (--exclude): priority 1
   int get priority {
     switch (source) {
@@ -145,7 +145,7 @@ enum IgnoreSource {
   /// From @keepUnused or @dead_code_ignore annotation (highest priority).
   annotation,
 
-  /// From flutter_dead_code.yaml configuration file.
+  /// From flutter_prunekit.yaml configuration file.
   configFile,
 
   /// From --exclude CLI flag (lowest priority).

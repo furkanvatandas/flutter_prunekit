@@ -77,7 +77,7 @@ or manually in `pubspec.yaml`:
 
 ```yaml
 dev_dependencies:
-  flutter_prunekit: ^2.0.0
+  flutter_prunekit: ^2.2.0
 ```
 
 Then fetch dependencies:
@@ -92,21 +92,74 @@ dart pub get
 dart pub global activate flutter_prunekit
 ```
 
-## Quick Start
+## Quick Start & Configuration
 
-Analyze the default `lib/` directory:
+### Run a Scan
+
+Analyze the default `lib/` directory with the `unused_code` command:
 
 ```bash
-dart run flutter_prunekit
+dart run flutter_dead_code unused_code
 ```
 
 If you installed globally:
 
 ```bash
-flutter_prunekit
+flutter_dead_code unused_code
 ```
 
-Add `--verbose` to see per-file progress, or `--json` to integrate with custom tooling.
+### Focus the Analysis
+
+- `--verbose` surfaces per-file progress.
+- `--json` emits machine-readable output.
+- Combine `--only-types`, `--only-methods`, and `--only-variables` to focus on specific findings.
+
+### Project Configuration
+
+The analyzer respects `analysis_options.yaml` excludes automatically. For deeper control, create `flutter_prunekit.yaml` at your project root:
+
+```yaml
+# flutter_prunekit.yaml
+
+exclude:
+  - 'lib/legacy/**'
+  - '**/generated/**'
+  - '**/*.g.dart'
+
+# Treat custom annotations as "keep" markers
+ignore_annotations:
+  - 'deprecated'
+  - 'experimental'
+
+# Ignore method patterns (glob syntax)
+ignore_methods:
+  - 'TestHelper.*'
+  - '*Controller.dispose'
+  - '_debug*'
+
+# Variable & parameter patterns
+ignore_variables:
+  - 'debug*'
+  - 'temp*'
+
+ignore_parameters:
+  - 'context'
+  - '_*'
+
+# Optional checks disabled by default
+check_catch_variables: false
+check_build_context_parameters: false
+```
+
+### Command-line Excludes
+
+Use `--exclude` for quick experiments without touching configuration files:
+
+```bash
+dart run flutter_dead_code unused_code \
+  --exclude 'lib/legacy/**' \
+  --exclude '**/experimental_*.dart'
+```
 
 ## Example Output
 
@@ -165,7 +218,7 @@ Top-Level Functions: 1
 
 ## Command Reference
 
-Run `flutter_prunekit --help` to see the full list of options. Highlights:
+Run `flutter_prunekit unused_code --help` to see the full list of options. Highlights:
 
 | Flag | Purpose | Notes |
 |------|---------|-------|
@@ -175,48 +228,14 @@ Run `flutter_prunekit --help` to see the full list of options. Highlights:
 | `--include-generated` | Scan generated code | Intended for `.g.dart`, `.freezed.dart`, etc. |
 | `--ignore-analysis-options` | Skip analyzer excludes | Useful for one-off deep scans. |
 | `--only-methods` | Skip class detection | Methods & variables are still analyzed. |
+| `--only-types` | Analyze only classes, enums, mixins, and extensions | Combine with other `--only-*` flags when needed. |
+| `--only-methods` | Analyze only functions and methods | Combine with other `--only-*` flags when needed. |
+| `--only-variables` | Analyze only variables and parameters | Combine with other `--only-*` flags when needed. |
 | `--json` | Emit JSON report | Matches CLI formatter schema. |
 | `--quiet` | Reduce console noise | Outputs only findings. |
 | `--verbose` | Per-file diagnostics | Great for CI troubleshooting. |
 
-## Configuration
-
-The analyzer respects `analysis_options.yaml` excludes automatically. Additional configuration lives in `flutter_dead_code.yaml` at your project root.
-
-### flutter_dead_code.yaml example
-
-```yaml
-# flutter_dead_code.yaml
-
-exclude:
-  - 'lib/legacy/**'
-  - '**/generated/**'
-  - '**/*.g.dart'
-
-# Treat custom annotations as "keep" markers
-ignore_annotations:
-  - 'deprecated'
-  - 'experimental'
-
-# Ignore method patterns (glob syntax)
-ignore_methods:
-  - 'TestHelper.*'
-  - '*Controller.dispose'
-  - '_debug*'
-
-# Variable & parameter patterns
-ignore_variables:
-  - 'debug*'
-  - 'temp*'
-
-ignore_parameters:
-  - 'context'
-  - '_*'
-
-# Optional checks disabled by default
-check_catch_variables: false
-check_build_context_parameters: false
-```
+Omitting all `--only-*` flags runs the full analysis across types, methods, and variables.
 
 ### Command-line excludes
 
@@ -233,7 +252,7 @@ dart run flutter_prunekit \
 Some code is meant to look unused (reflection, dynamic calls, DI). Choose the approach that fits best:
 
 1. **`@keepUnused` annotation** – highest priority. Works on classes, methods, variables, and parameters.
-2. **Configuration patterns** – add glob patterns to `flutter_dead_code.yaml` under `ignore_methods`, `ignore_variables`, or `ignore_parameters`.
+2. **Configuration patterns** – add glob patterns to `flutter_prunekit.yaml` under `ignore_methods`, `ignore_variables`, or `ignore_parameters`.
 3. **Underscore convention** – identifiers named `_` or prefixed with `_` are treated as intentionally unused.
 4. **CLI excludes** – skip entire files/folders on the command line.
 
@@ -254,7 +273,7 @@ Add a script to your workflow to keep dead code out of main branches:
 ```yaml
 # example GitHub Actions step
 - name: Dead code audit
-  run: dart run flutter_prunekit --include-generated --quiet
+  run: dart run flutter_prunekit unused_code --include-generated --quiet
 ```
 
 Exit code `1` will fail the job if any unused declarations remain.
