@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [2.2.1]
+
+### Fixed
+
+- Corrected command name references in documentation from `flutter_dead_code` to `flutter_prunekit` in README.md, example configuration, and CLI help text
+- Updated version string in CLI arguments to 2.2.1
+
 # [2.2.0]
 
 ### Added
@@ -117,6 +124,8 @@ Production-ready dead code analyzer for Dart & Flutter with **100% precision and
 
 ---
 
+[2.2.1]: https://github.com/furkanvatandas/flutter_prunekit/releases/tag/v2.2.1
+[2.2.0]: https://github.com/furkanvatandas/flutter_prunekit/releases/tag/v2.2.0
 [2.1.0]: https://github.com/furkanvatandas/flutter_prunekit/releases/tag/v2.1.0
 [2.0.0]: https://github.com/furkanvatandas/flutter_prunekit/releases/tag/v2.0.0
 [1.1.1]: https://github.com/furkanvatandas/flutter_prunekit/releases/tag/v1.1.1

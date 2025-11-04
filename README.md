@@ -99,13 +99,13 @@ dart pub global activate flutter_prunekit
 Analyze the default `lib/` directory with the `unused_code` command:
 
 ```bash
-dart run flutter_dead_code unused_code
+dart run flutter_prunekit unused_code
 ```
 
 If you installed globally:
 
 ```bash
-flutter_dead_code unused_code
+flutter_prunekit unused_code
 ```
 
 ### Focus the Analysis
@@ -156,7 +156,7 @@ check_build_context_parameters: false
 Use `--exclude` for quick experiments without touching configuration files:
 
 ```bash
-dart run flutter_dead_code unused_code \
+dart run flutter_prunekit unused_code \
   --exclude 'lib/legacy/**' \
   --exclude '**/experimental_*.dart'
 ```

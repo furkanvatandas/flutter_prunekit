@@ -125,6 +125,6 @@ check_build_context_parameters: false
 # 3. --exclude CLI flag (LOWEST - can be overridden by above)
 #
 # For temporary exclusions, prefer CLI flags:
-#   dart run flutter_dead_code --exclude 'lib/temp/**'
+#   dart run flutter_prunekit --exclude 'lib/temp/**'
 #
 # For permanent exclusions, use this config file or annotations

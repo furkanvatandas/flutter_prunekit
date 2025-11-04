@@ -1,6 +1,6 @@
 import 'package:args/args.dart';
 
-/// Parses command-line arguments for the flutter_dead_code tool.
+/// Parses command-line arguments for the flutter_prunekit tool.
 class Arguments {
   /// The root path(s) to analyze.
   final List<String> paths;
@@ -41,7 +41,7 @@ class Arguments {
   /// Whether to output the report in JSON format.
   final bool json;
 
-  /// Creates the parsed representation of CLI flags for `flutter_dead_code`.
+  /// Creates the parsed representation of CLI flags for `flutter_prunekit`.
   Arguments({
     required this.paths,
     required this.excludePatterns,
@@ -182,7 +182,7 @@ class Arguments {
     return '''
 Detect unused Dart and Flutter classes, methods, and variables in your codebase.
 
-Usage: flutter_dead_code unused_code [options]
+Usage: flutter_prunekit unused_code [options]
 
 Options:
 ${parser.usage}
@@ -193,17 +193,17 @@ Exit Codes:
   2 - Partial analysis completed with warnings
 
 Examples:
-  flutter_dead_code unused_code
-  flutter_dead_code unused_code --path lib --path test
-  flutter_dead_code unused_code --exclude 'lib/legacy/**'
-  flutter_dead_code unused_code --only-types
-  flutter_dead_code unused_code --only-methods
-  flutter_dead_code unused_code --only-variables
+  flutter_prunekit unused_code
+  flutter_prunekit unused_code --path lib --path test
+  flutter_prunekit unused_code --exclude 'lib/legacy/**'
+  flutter_prunekit unused_code --only-types
+  flutter_prunekit unused_code --only-methods
+  flutter_prunekit unused_code --only-variables
 ''';
   }
 
   /// Gets the version string.
   static String getVersion() {
-    return 'flutter_dead_code version 2.2.0';
+    return 'flutter_prunekit version 2.2.1';
   }
 }
