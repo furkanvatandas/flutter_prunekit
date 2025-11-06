@@ -2,6 +2,7 @@ import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/analysis/session.dart';
 import 'package:flutter_prunekit/src/utils/part_file_detector.dart';
+import 'package:path/path.dart' as p;
 
 /// Wrapper around the Dart Analyzer package.
 ///
@@ -26,14 +27,27 @@ class DartAnalyzerWrapper {
   /// The [rootPath] should be the absolute path to the project root.
   DartAnalyzerWrapper(String rootPath)
       : _collection = AnalysisContextCollection(
-          includedPaths: [rootPath],
+          includedPaths: [_normalizePathForAnalyzer(rootPath)],
         );
+
+  /// Normalizes a file path for the analyzer.
+  ///
+  /// On Windows, the analyzer expects paths with backslashes.
+  /// This method ensures the path is absolute and in the correct format.
+  static String _normalizePathForAnalyzer(String path) {
+    // Convert to absolute path first
+    final absolutePath = p.isAbsolute(path) ? path : p.absolute(path);
+    
+    // Use p.normalize which maintains native path separators
+    return p.normalize(absolutePath);
+  }
 
   /// Gets the analysis session for a given file path.
   ///
   /// The session provides access to resolved AST and semantic information.
   AnalysisSession getSessionForFile(String filePath) {
-    final context = _collection.contextFor(filePath);
+    final normalizedPath = _normalizePathForAnalyzer(filePath);
+    final context = _collection.contextFor(normalizedPath);
     return context.currentSession;
   }
 
@@ -48,29 +62,34 @@ class DartAnalyzerWrapper {
   /// The [filePath] must be an absolute path.
   Future<ResolvedUnitResult?> parseFile(String filePath) async {
     try {
+      // Normalize the path for Windows compatibility
+      final normalizedPath = _normalizePathForAnalyzer(filePath);
+      
       // Check if this is a part file
-      final isPartFile = await PartFileDetector.isPartFile(filePath);
+      final isPartFile = await PartFileDetector.isPartFile(normalizedPath);
 
       if (isPartFile) {
         // Resolve parent library path
-        final parentPath = await PartFileDetector.resolveParentPath(filePath);
+        final parentPath = await PartFileDetector.resolveParentPath(normalizedPath);
 
         if (parentPath == null) {
           // Orphaned part file - parent not found
           return null;
         }
 
+        final normalizedParentPath = _normalizePathForAnalyzer(parentPath);
+
         // Check cache for parent library
-        ResolvedLibraryResult? libraryResult = _libraryCache[parentPath];
+        ResolvedLibraryResult? libraryResult = _libraryCache[normalizedParentPath];
 
         if (libraryResult == null) {
           // Cache miss - parse parent library
-          final session = getSessionForFile(parentPath);
-          final result = await session.getResolvedLibrary(parentPath);
+          final session = getSessionForFile(normalizedParentPath);
+          final result = await session.getResolvedLibrary(normalizedParentPath);
 
           if (result is ResolvedLibraryResult) {
             // Store in cache
-            _libraryCache[parentPath] = result;
+            _libraryCache[normalizedParentPath] = result;
             libraryResult = result;
           } else {
             // Failed to parse parent library
@@ -81,7 +100,7 @@ class DartAnalyzerWrapper {
         // Extract the specific part unit from the library result
         try {
           return libraryResult.units.firstWhere(
-            (unit) => unit.path == filePath,
+            (unit) => _normalizePathForAnalyzer(unit.path) == normalizedPath,
           );
         } catch (e) {
           // Part file not found in library units
@@ -90,8 +109,8 @@ class DartAnalyzerWrapper {
       }
 
       // Regular file (not a part) - parse directly
-      final session = getSessionForFile(filePath);
-      final result = await session.getResolvedUnit(filePath);
+      final session = getSessionForFile(normalizedPath);
+      final result = await session.getResolvedUnit(normalizedPath);
 
       if (result is ResolvedUnitResult) {
         return result;
@@ -109,8 +128,9 @@ class DartAnalyzerWrapper {
   /// This is faster than full parsing for validation purposes.
   Future<bool> hasSyntaxErrors(String filePath) async {
     try {
-      final session = getSessionForFile(filePath);
-      final result = await session.getResolvedUnit(filePath);
+      final normalizedPath = _normalizePathForAnalyzer(filePath);
+      final session = getSessionForFile(normalizedPath);
+      final result = await session.getResolvedUnit(normalizedPath);
 
       if (result is ResolvedUnitResult) {
         return result.diagnostics.isNotEmpty;

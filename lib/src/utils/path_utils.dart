@@ -8,8 +8,12 @@ class PathUtils {
   /// Normalizes a file path to use forward slashes.
   ///
   /// Converts Windows backslashes to forward slashes for consistent output.
+  /// Ensures the path is absolute for proper analyzer compatibility.
   static String normalize(String path) {
-    return p.normalize(path).replaceAll(r'\', '/');
+    // Convert to absolute path first to ensure proper analyzer support
+    final absolutePath = p.isAbsolute(path) ? path : p.absolute(path);
+    // Then normalize and convert backslashes to forward slashes
+    return p.normalize(absolutePath).replaceAll(r'\', '/');
   }
 
   /// Converts an absolute path to a package-relative path.
