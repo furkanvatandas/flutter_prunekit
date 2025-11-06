@@ -7,8 +7,6 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - Fixed Windows path normalization issue causing "Failed to parse file (syntax errors or invalid Dart code)" errors on Windows systems
-- Enhanced cross-platform compatibility by properly handling native path separators in the analyzer wrapper
-- Ensured all file paths are converted to absolute paths before analysis for consistent behavior across platforms
 
 # [2.2.1]
 
