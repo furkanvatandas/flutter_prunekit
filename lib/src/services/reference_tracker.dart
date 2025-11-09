@@ -3,15 +3,18 @@ import '../models/class_reference.dart';
 import '../models/analysis_report.dart';
 import 'ast_analyzer.dart';
 import 'override_detector.dart';
+import '../utils/backing_field_resolver.dart';
 
 /// Builds and maintains the reference graph from AST analysis results.
 ///
 /// Tracks relationships between class declarations and their references.
 ///
 /// **T033**: Integrated OverrideDetector to mark method overrides during graph building.
+/// **T044**: Integrated BackingFieldResolver to identify field-backed properties.
 class ReferenceTracker {
   final List<AnalysisWarning> _warnings = [];
   final OverrideDetector _overrideDetector = OverrideDetector();
+  final BackingFieldResolver _backingFieldResolver = BackingFieldResolver();
 
   /// Get all warnings accumulated during graph building.
   List<AnalysisWarning> get warnings => List.unmodifiable(_warnings);
@@ -40,6 +43,11 @@ class ReferenceTracker {
       // Add variable declarations for unused-variable tracking
       for (final variableDeclaration in fileResult.variableDeclarations) {
         graph.addVariableDeclaration(variableDeclaration);
+      }
+
+      // T022: Add field declarations for unused-field tracking
+      for (final fieldDeclaration in fileResult.fieldDeclarations) {
+        graph.addFieldDeclaration(fieldDeclaration);
       }
 
       // Track dynamic type usage
@@ -83,7 +91,15 @@ class ReferenceTracker {
       for (final variableReference in fileResult.variableReferences) {
         graph.addVariableReference(variableReference);
       }
+
+      // T022: Add field accesses for unused-field tracking
+      for (final fieldAccess in fileResult.fieldAccesses) {
+        graph.addFieldAccess(fieldAccess);
+      }
     }
+
+    // T044: Build backing field mappings for transitive dead code detection
+    _buildBackingFieldMappings(graph);
 
     // Emit warnings for dynamic type usage
     if (filesWithDynamicUsage.isNotEmpty) {
@@ -159,6 +175,18 @@ class ReferenceTracker {
           merged.addVariableReference(variableReference);
         }
       }
+
+      // T022: Merge field declarations for unused-field analysis
+      for (final fieldDecl in graph.fieldDeclarations.values) {
+        merged.addFieldDeclaration(fieldDecl);
+      }
+
+      // T022: Merge field accesses for unused-field analysis
+      for (final entry in graph.fieldAccesses.entries) {
+        for (final fieldAccess in entry.value) {
+          merged.addFieldAccess(fieldAccess);
+        }
+      }
     }
 
     return merged;
@@ -228,6 +256,22 @@ class ReferenceTracker {
       }
     }
 
+    // T022: Copy field declarations from files that weren't updated
+    for (final fieldDecl in existingGraph.fieldDeclarations.values) {
+      if (!filePathsToUpdate.contains(fieldDecl.filePath)) {
+        newGraph.addFieldDeclaration(fieldDecl);
+      }
+    }
+
+    // T022: Copy field accesses from files that weren't updated
+    for (final entry in existingGraph.fieldAccesses.entries) {
+      for (final fieldAccess in entry.value) {
+        if (!filePathsToUpdate.contains(fieldAccess.filePath)) {
+          newGraph.addFieldAccess(fieldAccess);
+        }
+      }
+    }
+
     // Collect method declarations from updated files for override detection (T033)
     final updatedMethodDeclarations = <dynamic>[];
     for (final fileResult in updatedFiles) {
@@ -261,6 +305,14 @@ class ReferenceTracker {
       for (final variableReference in fileResult.variableReferences) {
         newGraph.addVariableReference(variableReference);
       }
+      // Add field declarations
+      for (final fieldDecl in fileResult.fieldDeclarations) {
+        newGraph.addFieldDeclaration(fieldDecl);
+      }
+      // Add field accesses
+      for (final fieldAccess in fileResult.fieldAccesses) {
+        newGraph.addFieldAccess(fieldAccess);
+      }
     }
 
     // Add method declarations with override flags (T033)
@@ -269,5 +321,22 @@ class ReferenceTracker {
     }
 
     return newGraph;
+  }
+
+  /// Builds backing field mappings for field-backed property detection (T044).
+  ///
+  /// Identifies fields that serve as backing storage for getter/setter properties
+  /// using BackingFieldResolver heuristics.
+  void _buildBackingFieldMappings(ReferenceGraph graph) {
+    // Use BackingFieldResolver to identify field-backed properties
+    final mappings = _backingFieldResolver.resolveAll(
+      fieldDeclarations: graph.fieldDeclarations,
+      methodDeclarations: graph.methodDeclarations,
+    );
+
+    // Add mappings to graph
+    for (final mapping in mappings) {
+      graph.addBackingFieldMapping(mapping);
+    }
   }
 }

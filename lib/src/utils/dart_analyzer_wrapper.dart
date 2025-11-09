@@ -37,7 +37,7 @@ class DartAnalyzerWrapper {
   static String _normalizePathForAnalyzer(String path) {
     // Convert to absolute path first
     final absolutePath = p.isAbsolute(path) ? path : p.absolute(path);
-    
+
     // Use p.normalize which maintains native path separators
     return p.normalize(absolutePath);
   }
@@ -64,7 +64,7 @@ class DartAnalyzerWrapper {
     try {
       // Normalize the path for Windows compatibility
       final normalizedPath = _normalizePathForAnalyzer(filePath);
-      
+
       // Check if this is a part file
       final isPartFile = await PartFileDetector.isPartFile(normalizedPath);
 

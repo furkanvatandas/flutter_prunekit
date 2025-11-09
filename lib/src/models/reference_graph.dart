@@ -5,6 +5,9 @@ import 'method_invocation.dart';
 import 'variable_declaration.dart';
 import 'variable_reference.dart';
 import 'variable_types.dart';
+import 'field_declaration.dart';
+import 'field_access.dart';
+import 'backing_field_mapping.dart';
 
 /// Represents the complete reference graph of the codebase.
 ///
@@ -54,6 +57,30 @@ class ReferenceGraph {
   /// Value: List of references to that variable
   final Map<String, List<VariableReference>> variableReferences;
 
+  /// All field declarations tracked for unused field analysis (T008).
+  ///
+  /// Key: field uniqueId (filePath#DeclaringType.fieldName)
+  /// Value: FieldDeclaration
+  final Map<String, FieldDeclaration> fieldDeclarations;
+
+  /// All field accesses encountered during analysis (T008).
+  ///
+  /// Key: field uniqueId
+  /// Value: List of accesses to that field
+  final Map<String, List<FieldAccess>> fieldAccesses;
+
+  /// Field-to-accessor mappings for transitive detection (T008).
+  ///
+  /// Maps backing fields to their getter/setter properties
+  final List<BackingFieldMapping> backingFieldMappings;
+
+  /// Class inheritance hierarchy for field access matching.
+  ///
+  /// Key: class name
+  /// Value: superclass name (if any)
+  /// Built lazily from ClassDeclaration.superclass
+  Map<String, String>? _inheritanceHierarchy;
+
   /// String interning pool for file paths (T071).
   ///
   /// File paths are repeated many times (once per reference), so we intern
@@ -69,10 +96,16 @@ class ReferenceGraph {
     Map<String, List<MethodInvocation>>? methodInvocations,
     Map<String, VariableDeclaration>? variableDeclarations,
     Map<String, List<VariableReference>>? variableReferences,
+    Map<String, FieldDeclaration>? fieldDeclarations,
+    Map<String, List<FieldAccess>>? fieldAccesses,
+    List<BackingFieldMapping>? backingFieldMappings,
   })  : methodDeclarations = methodDeclarations ?? {},
         methodInvocations = methodInvocations ?? {},
         variableDeclarations = variableDeclarations ?? {},
-        variableReferences = variableReferences ?? {};
+        variableReferences = variableReferences ?? {},
+        fieldDeclarations = fieldDeclarations ?? {},
+        fieldAccesses = fieldAccesses ?? {},
+        backingFieldMappings = backingFieldMappings ?? [];
 
   /// Creates an empty reference graph.
   ReferenceGraph.empty()
@@ -81,7 +114,10 @@ class ReferenceGraph {
         methodDeclarations = {},
         methodInvocations = {},
         variableDeclarations = {},
-        variableReferences = {};
+        variableReferences = {},
+        fieldDeclarations = {},
+        fieldAccesses = {},
+        backingFieldMappings = [];
 
   /// Interns a file path to reduce memory usage (T071).
   ///
@@ -168,6 +204,78 @@ class ReferenceGraph {
 
     variableReferences.putIfAbsent(reference.variableId, () => []).add(internedReference);
   }
+
+  /// Adds a field declaration to the graph (T008).
+  void addFieldDeclaration(FieldDeclaration declaration) {
+    fieldDeclarations[declaration.uniqueId] = declaration;
+  }
+
+  /// Adds a field access to the graph (T008).
+  ///
+  /// Automatically interns the file path to reduce memory usage.
+  void addFieldAccess(FieldAccess access) {
+    final internedPath = _internPath(access.filePath);
+    final needsCopy = internedPath != access.filePath;
+    final internedAccess = needsCopy
+        ? FieldAccess(
+            fieldName: access.fieldName,
+            declaringType: access.declaringType,
+            filePath: internedPath,
+            lineNumber: access.lineNumber,
+            columnNumber: access.columnNumber,
+            accessType: access.accessType,
+            accessPattern: access.accessPattern,
+            isImplicitThis: access.isImplicitThis,
+            inConstructor: access.inConstructor,
+            inEqualityOperator: access.inEqualityOperator,
+            inStringInterpolation: access.inStringInterpolation,
+            inCascade: access.inCascade,
+          )
+        : access;
+
+    fieldAccesses.putIfAbsent(access.fieldUniqueId, () => []).add(internedAccess);
+  }
+
+  /// Returns all field accesses for a given field uniqueId (T008).
+  List<FieldAccess> getFieldAccesses(String fieldId) {
+    return fieldAccesses[fieldId] ?? [];
+  }
+
+  /// Returns the backing field mapping for a given field uniqueId (T008).
+  ///
+  /// Returns null if no mapping exists.
+  BackingFieldMapping? getBackingFieldMapping(String fieldId) {
+    try {
+      return backingFieldMappings.firstWhere(
+        (mapping) => mapping.fieldDeclaration.uniqueId == fieldId,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Adds a backing field mapping to the graph (T044).
+  ///
+  /// This links fields to their getter/setter accessors for transitive
+  /// dead code detection.
+  void addBackingFieldMapping(BackingFieldMapping mapping) {
+    // Avoid duplicates - check if mapping for this field already exists
+    final existingIndex = backingFieldMappings.indexWhere(
+      (m) => m.fieldDeclaration.uniqueId == mapping.fieldDeclaration.uniqueId,
+    );
+
+    if (existingIndex >= 0) {
+      // Replace existing mapping if new one has higher confidence
+      if (mapping.confidenceScore > backingFieldMappings[existingIndex].confidenceScore) {
+        backingFieldMappings[existingIndex] = mapping;
+      }
+    } else {
+      // Add new mapping
+      backingFieldMappings.add(mapping);
+    }
+  }
+
+  /// Returns all variable references encountered during analysis.
 
   /// Returns all declarations that have no references.
   ///
@@ -383,4 +491,74 @@ class GraphStatistics {
     this.totalVariableReferences = 0,
     this.unusedVariableCount = 0,
   });
+}
+
+// Extension methods for inheritance-aware field matching
+extension InheritanceAware on ReferenceGraph {
+  /// Builds the inheritance hierarchy map from class declarations.
+  Map<String, String> _buildInheritanceHierarchy() {
+    if (_inheritanceHierarchy != null) return _inheritanceHierarchy!;
+
+    final hierarchy = <String, String>{};
+    for (final decl in declarations.values) {
+      if (decl.superclass != null) {
+        hierarchy[decl.name] = decl.superclass!;
+      }
+    }
+    _inheritanceHierarchy = hierarchy;
+    return hierarchy;
+  }
+
+  /// Checks if [subclass] is a subclass of [superclass] (direct or indirect).
+  bool isSubclassOf(String subclass, String superclass) {
+    final hierarchy = _buildInheritanceHierarchy();
+    var current = subclass;
+
+    // Walk up the inheritance chain
+    while (hierarchy.containsKey(current)) {
+      final parent = hierarchy[current]!;
+      if (parent == superclass) return true;
+      current = parent;
+    }
+
+    return false;
+  }
+
+  /// Checks if [class1] and [class2] are in the same inheritance hierarchy.
+  bool inSameHierarchy(String class1, String class2) {
+    return class1 == class2 || isSubclassOf(class1, class2) || isSubclassOf(class2, class1);
+  }
+
+  /// Gets all subclasses of [className] (direct only).
+  List<String> getDirectSubclasses(String className) {
+    final hierarchy = _buildInheritanceHierarchy();
+    return hierarchy.entries.where((entry) => entry.value == className).map((entry) => entry.key).toList();
+  }
+
+  /// Gets all field declarations that could match the given access.
+  ///
+  /// Includes exact match plus inheritance-aware matches:
+  /// - If access is to base class, include all subclass overrides
+  /// - If access is to subclass, include base class declaration
+  List<FieldDeclaration> getMatchingFieldDeclarations(String accessDeclaringType, String fieldName) {
+    final matches = <FieldDeclaration>[];
+
+    // Try exact match first
+    final exactId = '$accessDeclaringType.$fieldName';
+    if (fieldDeclarations.containsKey(exactId)) {
+      matches.add(fieldDeclarations[exactId]!);
+    }
+
+    // Try inheritance-aware matching
+    for (final fieldDecl in fieldDeclarations.values) {
+      if (fieldDecl.name == fieldName && fieldDecl.declaringType != accessDeclaringType) {
+        // Check if they're in the same hierarchy
+        if (inSameHierarchy(accessDeclaringType, fieldDecl.declaringType)) {
+          matches.add(fieldDecl);
+        }
+      }
+    }
+
+    return matches;
+  }
 }

@@ -5,6 +5,7 @@ import '../models/class_declaration.dart';
 import '../models/method_declaration.dart';
 import '../models/variable_declaration.dart';
 import '../models/variable_types.dart';
+import '../models/field_declaration.dart' as field_model;
 
 /// Formats analysis reports for different output modes.
 class OutputFormatter {
@@ -15,6 +16,7 @@ class OutputFormatter {
     bool includeTypes = true,
     bool includeMethods = true,
     bool includeVariables = true,
+    bool includeFields = true,
     bool asJson = false,
   }) {
     if (asJson) {
@@ -23,6 +25,7 @@ class OutputFormatter {
         includeTypes: includeTypes,
         includeMethods: includeMethods,
         includeVariables: includeVariables,
+        includeFields: includeFields,
       );
     }
     return formatHuman(
@@ -31,6 +34,7 @@ class OutputFormatter {
       includeTypes: includeTypes,
       includeMethods: includeMethods,
       includeVariables: includeVariables,
+      includeFields: includeFields,
     );
   }
 
@@ -41,6 +45,7 @@ class OutputFormatter {
     bool includeTypes = true,
     bool includeMethods = true,
     bool includeVariables = true,
+    bool includeFields = true,
   }) {
     final buffer = StringBuffer();
 
@@ -257,6 +262,84 @@ class OutputFormatter {
       }
     }
 
+    // Show unused fields (T025)
+    if (includeFields) {
+      if (report.unusedFields.isNotEmpty) {
+        buffer.writeln(AnsiStyles.yellow('⚠ Found ${report.unusedFields.length} unused field(s):'));
+        buffer.writeln();
+
+        // Group by declaring type
+        final grouped = <String, List<field_model.FieldDeclaration>>{};
+        for (final field in report.unusedFields) {
+          grouped.putIfAbsent(field.declaringType, () => []).add(field);
+        }
+
+        // Sort classes alphabetically
+        final sortedTypes = grouped.keys.toList()..sort();
+
+        for (final type in sortedTypes) {
+          final fields = grouped[type]!;
+
+          // Sort fields by line number
+          fields.sort((a, b) => a.lineNumber.compareTo(b.lineNumber));
+
+          buffer.writeln(AnsiStyles.cyan('$type:'));
+          buffer.writeln();
+
+          for (final field in fields) {
+            final location = '${field.filePath}:${field.lineNumber}:${field.columnNumber}';
+            buffer.writeln('  ${AnsiStyles.gray(location)}');
+
+            final fieldName = field.visibility == field_model.Visibility.private
+                ? AnsiStyles.dim(field.name)
+                : AnsiStyles.white(field.name);
+            final fieldTypeLabel = field.fieldType == field_model.FieldType.static ? ' (static)' : '';
+            buffer.writeln('    $fieldName$fieldTypeLabel');
+          }
+
+          buffer.writeln();
+        }
+      }
+
+      // Show write-only fields (T026)
+      if (report.writeOnlyFields.isNotEmpty) {
+        buffer.writeln(AnsiStyles.yellow('⚠ Found ${report.writeOnlyFields.length} write-only field(s):'));
+        buffer.writeln();
+
+        // Group by declaring type
+        final grouped = <String, List<field_model.FieldDeclaration>>{};
+        for (final field in report.writeOnlyFields) {
+          grouped.putIfAbsent(field.declaringType, () => []).add(field);
+        }
+
+        // Sort classes alphabetically
+        final sortedTypes = grouped.keys.toList()..sort();
+
+        for (final type in sortedTypes) {
+          final fields = grouped[type]!;
+
+          // Sort fields by line number
+          fields.sort((a, b) => a.lineNumber.compareTo(b.lineNumber));
+
+          buffer.writeln(AnsiStyles.cyan('$type:'));
+          buffer.writeln();
+
+          for (final field in fields) {
+            final location = '${field.filePath}:${field.lineNumber}:${field.columnNumber}';
+            buffer.writeln('  ${AnsiStyles.gray(location)}');
+
+            final fieldName = field.visibility == field_model.Visibility.private
+                ? AnsiStyles.dim(field.name)
+                : AnsiStyles.white(field.name);
+            final fieldTypeLabel = field.fieldType == field_model.FieldType.static ? ' (static)' : '';
+            buffer.writeln('    $fieldName$fieldTypeLabel');
+          }
+
+          buffer.writeln();
+        }
+      }
+    }
+
     if (!quiet) {
       buffer.writeln(AnsiStyles.bold(AnsiStyles.cyan('─── Summary ───')));
       buffer.writeln();
@@ -305,6 +388,25 @@ class OutputFormatter {
 
         final variableUsageRate = (report.summary.variableUsageRate * 100).toStringAsFixed(1);
         buffer.writeln('  ${AnsiStyles.bold('Variable usage rate:')} ${AnsiStyles.green('$variableUsageRate%')}');
+      }
+
+      // Show field statistics if any fields were analyzed
+      if (includeFields && report.summary.totalFieldsAnalyzed > 0) {
+        buffer.writeln();
+        buffer.writeln(
+            '  ${AnsiStyles.bold('Fields analyzed:')} ${AnsiStyles.white(report.summary.totalFieldsAnalyzed.toString())}');
+
+        final fieldUnusedColor = report.summary.unusedFieldsCount > 0 ? AnsiStyles.yellow : AnsiStyles.green;
+        buffer.writeln(
+            '  ${AnsiStyles.bold('Unused fields:')} ${fieldUnusedColor(report.summary.unusedFieldsCount.toString())}');
+
+        if (report.summary.writeOnlyFieldsCount > 0) {
+          buffer.writeln(
+              '  ${AnsiStyles.bold('Write-only:')} ${fieldUnusedColor(report.summary.writeOnlyFieldsCount.toString())}');
+        }
+
+        final fieldUsageRate = (report.summary.fieldUsageRate * 100).toStringAsFixed(1);
+        buffer.writeln('  ${AnsiStyles.bold('Field usage rate:')} ${AnsiStyles.green('$fieldUsageRate%')}');
       }
 
       // Show exclusion details if any files were excluded
@@ -368,6 +470,7 @@ class OutputFormatter {
     bool includeTypes = true,
     bool includeMethods = true,
     bool includeVariables = true,
+    bool includeFields = true,
   }) {
     final map = <String, dynamic>{
       'version': report.version,
@@ -379,6 +482,10 @@ class OutputFormatter {
           includeMethods ? report.unusedMethods.map(_methodDeclarationToJson).toList() : <Map<String, dynamic>>[],
       'unusedVariables':
           includeVariables ? report.unusedVariables.map(_variableDeclarationToJson).toList() : <Map<String, dynamic>>[],
+      'unusedFields':
+          includeFields ? report.unusedFields.map(_fieldDeclarationToJson).toList() : <Map<String, dynamic>>[],
+      'writeOnlyFields':
+          includeFields ? report.writeOnlyFields.map(_fieldDeclarationToJson).toList() : <Map<String, dynamic>>[],
       'summary': _summaryToJson(report.summary),
       'warnings': report.warnings.map(_warningToJson).toList(),
     };
@@ -495,6 +602,23 @@ class OutputFormatter {
     };
   }
 
+  static Map<String, dynamic> _fieldDeclarationToJson(field_model.FieldDeclaration declaration) {
+    return {
+      'name': declaration.name,
+      'filePath': declaration.filePath,
+      'lineNumber': declaration.lineNumber,
+      'columnNumber': declaration.columnNumber,
+      'declaringType': declaration.declaringType,
+      'declaringTypeKind': declaration.declaringTypeKind.name,
+      'fieldType': declaration.fieldType.name,
+      'mutability': declaration.mutability.name,
+      'visibility': declaration.visibility.name,
+      'annotations': declaration.annotations,
+      'isEnumInstanceField': declaration.isEnumInstanceField,
+      'isExtensionTypeRepresentation': declaration.isExtensionTypeRepresentation,
+    };
+  }
+
   static Map<String, dynamic> _summaryToJson(AnalysisSummary summary) {
     final data = <String, dynamic>{
       'totalFiles': summary.totalFiles,
@@ -518,6 +642,12 @@ class OutputFormatter {
       'variablesExplicitlyIgnored': summary.variablesExplicitlyIgnored,
       'variablesIgnoredByConvention': summary.variablesIgnoredByConvention,
       'variablesIgnoredByPattern': summary.variablesIgnoredByPattern,
+      'totalFieldsAnalyzed': summary.totalFieldsAnalyzed,
+      'totalInstanceFields': summary.totalInstanceFields,
+      'totalStaticFields': summary.totalStaticFields,
+      'unusedFieldCount': summary.unusedFieldsCount,
+      'writeOnlyFieldCount': summary.writeOnlyFieldsCount,
+      'fieldsExcluded': summary.fieldsExcluded,
       'filesExcluded': summary.excludedFiles,
       'filesExcludedAsGenerated': summary.filesExcludedAsGenerated,
       'filesExcludedByIgnorePatterns': summary.filesExcludedByIgnorePatterns,
@@ -529,6 +659,7 @@ class OutputFormatter {
       'usageRate': summary.usageRate,
       'methodUsageRate': summary.methodUsageRate,
       'variableUsageRate': summary.variableUsageRate,
+      'fieldUsageRate': summary.fieldUsageRate,
     };
 
     if (summary.precisionRate != null) {

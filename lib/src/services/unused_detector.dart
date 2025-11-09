@@ -6,6 +6,9 @@ import '../models/ignore_configuration.dart';
 import '../models/variable_declaration.dart' as variable_model;
 import '../models/parameter_declaration.dart' as parameter_model;
 import '../models/variable_types.dart';
+import '../models/field_declaration.dart' as field_model;
+import '../models/field_access.dart' as field_access_model;
+import '../models/backing_field_mapping.dart' as backing_field_model;
 
 /// Detects unused classes and methods in a reference graph.
 ///
@@ -412,6 +415,177 @@ class UnusedDetector {
     );
   }
 
+  /// Detects unused field declarations (T023).
+  ///
+  /// Returns fields that have zero accesses in the graph.
+  /// Excludes fields matching ignore patterns or annotations.
+  List<field_model.FieldDeclaration> detectUnusedFields(ReferenceGraph graph) {
+    final unusedFields = <field_model.FieldDeclaration>[];
+
+    // Iterate all field declarations
+    for (final fieldDecl in graph.fieldDeclarations.values) {
+      // Check if field has any accesses (with inheritance-aware matching)
+      final accesses = _getFieldAccessesWithInheritance(fieldDecl, graph);
+
+      if (accesses.isEmpty) {
+        // Field has zero accesses, check if should be ignored
+        if (!_shouldIgnoreField(fieldDecl, graph)) {
+          unusedFields.add(fieldDecl);
+        }
+      }
+    }
+
+    // Sort by file path, line number, and name for deterministic output
+    unusedFields.sort((a, b) {
+      final fileCompare = a.filePath.compareTo(b.filePath);
+      if (fileCompare != 0) return fileCompare;
+
+      final lineCompare = a.lineNumber.compareTo(b.lineNumber);
+      if (lineCompare != 0) return lineCompare;
+
+      return a.name.compareTo(b.name);
+    });
+
+    return unusedFields;
+  }
+
+  /// Gets all field accesses for a field declaration, including inheritance-aware matches.
+  ///
+  /// For example:
+  /// - If field is declared in `BaseClass`, includes accesses to `BaseClass.field` and `SubClass.field`
+  /// - If field is declared in `SubClass` (overriding base), includes accesses to `BaseClass.field`
+  List<field_access_model.FieldAccess> _getFieldAccessesWithInheritance(
+    field_model.FieldDeclaration fieldDecl,
+    ReferenceGraph graph,
+  ) {
+    final allAccesses = <field_access_model.FieldAccess>[];
+
+    // Get exact match accesses
+    final exactAccesses = graph.fieldAccesses[fieldDecl.uniqueId] ?? [];
+    allAccesses.addAll(exactAccesses);
+
+    // Get inheritance-aware accesses
+    // Find all field accesses with same field name in the inheritance hierarchy
+    for (final accessList in graph.fieldAccesses.values) {
+      for (final access in accessList) {
+        if (access.fieldName == fieldDecl.name && access.declaringType != fieldDecl.declaringType) {
+          // Check if they're in the same inheritance hierarchy
+          if (graph.inSameHierarchy(access.declaringType, fieldDecl.declaringType)) {
+            // Avoid duplicates
+            if (!allAccesses.any((a) =>
+                a.fieldName == access.fieldName &&
+                a.declaringType == access.declaringType &&
+                a.lineNumber == access.lineNumber &&
+                a.filePath == access.filePath)) {
+              allAccesses.add(access);
+            }
+          }
+        }
+      }
+    }
+
+    return allAccesses;
+  }
+
+  /// Detects write-only field declarations (T024).
+  ///
+  /// Returns fields that have writes but zero reads.
+  /// Excludes fields matching ignore patterns or annotations.
+  List<field_model.FieldDeclaration> detectWriteOnlyFields(ReferenceGraph graph) {
+    final writeOnlyFields = <field_model.FieldDeclaration>[];
+
+    // Iterate all field declarations
+    for (final fieldDecl in graph.fieldDeclarations.values) {
+      // Get accesses with inheritance-aware matching
+      final accesses = _getFieldAccessesWithInheritance(fieldDecl, graph);
+
+      if (accesses.isEmpty) {
+        // No accesses at all - this is handled by detectUnusedFields
+        continue;
+      }
+
+      // Check if field has any read accesses
+      final hasRead = accesses.any((access) => access.isRead);
+
+      if (!hasRead) {
+        // Field has writes but no reads
+        if (!_shouldIgnoreField(fieldDecl, graph)) {
+          writeOnlyFields.add(fieldDecl);
+        }
+      }
+    }
+
+    // Sort by file path, line number, and name for deterministic output
+    writeOnlyFields.sort((a, b) {
+      final fileCompare = a.filePath.compareTo(b.filePath);
+      if (fileCompare != 0) return fileCompare;
+
+      final lineCompare = a.lineNumber.compareTo(b.lineNumber);
+      if (lineCompare != 0) return lineCompare;
+
+      return a.name.compareTo(b.name);
+    });
+
+    return writeOnlyFields;
+  }
+
+  /// Checks if a field declaration should be ignored (T023, T024).
+  ///
+  /// Applies ignore pattern priority:
+  /// 1. @keepUnused annotation
+  /// 2. Declaring class has reflection-based annotation (@RealmModel, etc.)
+  /// 3. flutter_prunekit.yaml config patterns
+  /// 4. --exclude CLI flag patterns
+  bool _shouldIgnoreField(field_model.FieldDeclaration declaration, ReferenceGraph graph) {
+    final fieldId = '${declaration.declaringType}.${declaration.name}';
+
+    // Check annotation-based ignoring (highest priority)
+    if (declaration.hasKeepUnusedAnnotation) {
+      if (verbose) {
+        print('  [IGNORE] $fieldId - Has @keepUnused annotation');
+      }
+      return true;
+    }
+
+    // Check if declaring class has reflection-based annotations
+    // These annotations indicate fields are accessed via reflection/code generation
+    // Class declarations are keyed by "filePath#className"
+    final classKey = '${declaration.filePath}#${declaration.declaringType}';
+    final declaringClass = graph.declarations[classKey];
+    if (declaringClass != null) {
+      // Only annotations that actually generate code accessing fields
+      final reflectionAnnotations = ['RealmModel', 'freezed']; // Removed JsonSerializable to detect unused JSON fields
+      for (final annotation in declaringClass.annotations) {
+        if (reflectionAnnotations.any((a) => annotation.toLowerCase().contains(a.toLowerCase()))) {
+          if (verbose) {
+            print('  [IGNORE] $fieldId - Declaring class has reflection-based annotation: @$annotation');
+          }
+          return true;
+        }
+      }
+    }
+
+    // Check file-level ignore patterns
+    final filePatterns = ignorePatterns
+        .where((p) => p.type == IgnorePatternType.file)
+        .where((p) => p.matches(declaration.filePath))
+        .toList();
+
+    if (filePatterns.isNotEmpty) {
+      if (verbose) {
+        final pattern = filePatterns.first;
+        print('  [IGNORE] $fieldId - File excluded by ${_getSourceName(pattern.source)}: ${pattern.pattern}');
+      }
+      return true;
+    }
+
+    // Check field-level ignore patterns (if field patterns exist)
+    // Note: Field-specific patterns would need to be added to IgnorePattern
+    // For now, we only check file-level patterns
+
+    return false;
+  }
+
   /// Checks if a parameter is a BuildContext type (SC-007).
   ///
   /// Only uses static type information from the analyzer.
@@ -428,6 +602,79 @@ class UnusedDetector {
     }
 
     return false;
+  }
+
+  /// Detects unused field-backed properties (T045).
+  ///
+  /// Identifies backing field mappings where both the field and its getter/setter
+  /// are unused. This is transitive dead code detection - if the field is only
+  /// accessed within its own accessor methods, and those accessor methods are never
+  /// called, then both the field and accessors are dead code.
+  ///
+  /// Returns list of BackingFieldMapping instances where the entire property is unused.
+  List<backing_field_model.BackingFieldMapping> detectUnusedFieldBackedProperties(
+    ReferenceGraph graph,
+  ) {
+    final unusedProperties = <backing_field_model.BackingFieldMapping>[];
+
+    // Iterate all backing field mappings
+    for (final mapping in graph.backingFieldMappings) {
+      // Transitive unused detection logic:
+      // Property is unused ONLY if ALL accessors that exist are unused
+      // - If getter exists AND is used: property is used
+      // - If setter exists AND is used: property is used
+      // - If both exist and both are unused: property is unused
+      // - If only getter exists and is unused: property is unused
+      // - If only setter exists and is unused: property is unused
+
+      bool hasUsedAccessor = false;
+
+      // Check if getter is used (if it exists)
+      if (mapping.getterMethod != null) {
+        // NOTE: methodInvocations map uses methodName as key, not uniqueId
+        // We need to check invocations by methodName and filter by targetClass
+        final getterName = mapping.getterMethod!.name;
+        final declaringClass = mapping.getterMethod!.containingClass;
+
+        final allInvocations = graph.methodInvocations[getterName] ?? [];
+        final relevantInvocations = allInvocations.where((inv) => inv.targetClass == declaringClass).toList();
+
+        if (relevantInvocations.isNotEmpty) {
+          hasUsedAccessor = true;
+        }
+      }
+
+      // Check if setter is used (if it exists)
+      if (mapping.setterMethod != null && !hasUsedAccessor) {
+        final setterName = mapping.setterMethod!.name;
+        final declaringClass = mapping.setterMethod!.containingClass;
+
+        final allInvocations = graph.methodInvocations[setterName] ?? [];
+        final relevantInvocations = allInvocations.where((inv) => inv.targetClass == declaringClass).toList();
+
+        if (relevantInvocations.isNotEmpty) {
+          hasUsedAccessor = true;
+        }
+      }
+
+      // Property is unused only if no accessor is used
+      if (!hasUsedAccessor) {
+        // Check if this should be ignored
+        if (!_shouldIgnoreField(mapping.fieldDeclaration, graph)) {
+          unusedProperties.add(mapping);
+        }
+      }
+    }
+
+    // Sort by file path, line number for deterministic output
+    unusedProperties.sort((a, b) {
+      final fileCompare = a.fieldDeclaration.filePath.compareTo(b.fieldDeclaration.filePath);
+      if (fileCompare != 0) return fileCompare;
+
+      return a.fieldDeclaration.lineNumber.compareTo(b.fieldDeclaration.lineNumber);
+    });
+
+    return unusedProperties;
   }
 }
 

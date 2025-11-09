@@ -22,6 +22,12 @@ class ClassDeclaration {
   /// Used to detect @keepUnused and other ignore annotations.
   final List<String> annotations;
 
+  /// Name of the superclass (if any).
+  ///
+  /// Used for inheritance-aware field access matching.
+  /// Null for classes without explicit superclass or for Object superclass.
+  final String? superclass;
+
   /// Creates a new class declaration.
   ClassDeclaration({
     required this.name,
@@ -30,6 +36,7 @@ class ClassDeclaration {
     required this.kind,
     required this.isPrivate,
     required this.annotations,
+    this.superclass,
   });
 
   /// Returns a unique identifier for this class declaration.

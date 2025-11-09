@@ -1,6 +1,8 @@
 import 'class_declaration.dart';
 import 'method_declaration.dart';
 import 'variable_declaration.dart';
+import 'field_declaration.dart';
+import 'backing_field_mapping.dart';
 
 /// The complete analysis report containing unused classes and metadata.
 ///
@@ -24,6 +26,15 @@ class AnalysisReport {
   /// List of unused variable declarations (US1).
   final List<VariableDeclaration> unusedVariables;
 
+  /// List of unused field declarations (T009).
+  final List<FieldDeclaration> unusedFields;
+
+  /// List of write-only field declarations (T009).
+  final List<FieldDeclaration> writeOnlyFields;
+
+  /// List of unused field-backed properties (T009).
+  final List<BackingFieldMapping> unusedFieldBackedProperties;
+
   /// Summary statistics and metrics.
   final AnalysisSummary summary;
 
@@ -39,8 +50,14 @@ class AnalysisReport {
     required this.warnings,
     List<MethodDeclaration>? unusedMethods,
     List<VariableDeclaration>? unusedVariables,
+    List<FieldDeclaration>? unusedFields,
+    List<FieldDeclaration>? writeOnlyFields,
+    List<BackingFieldMapping>? unusedFieldBackedProperties,
   })  : unusedMethods = unusedMethods ?? [],
-        unusedVariables = unusedVariables ?? [];
+        unusedVariables = unusedVariables ?? [],
+        unusedFields = unusedFields ?? [],
+        writeOnlyFields = writeOnlyFields ?? [],
+        unusedFieldBackedProperties = unusedFieldBackedProperties ?? [];
 
   /// Whether the analysis completed successfully without errors.
   bool get isSuccess => warnings.isEmpty || warnings.every((w) => !w.isFatal);
@@ -54,8 +71,17 @@ class AnalysisReport {
   /// Whether any unused variables were found (US1).
   bool get hasUnusedVariables => unusedVariables.isNotEmpty;
 
+  /// Whether any unused fields were found (T009).
+  bool get hasUnusedFields => unusedFields.isNotEmpty;
+
+  /// Whether any write-only fields were found (T009).
+  bool get hasWriteOnlyFields => writeOnlyFields.isNotEmpty;
+
+  /// Whether any unused field-backed properties were found (T009).
+  bool get hasUnusedFieldBackedProperties => unusedFieldBackedProperties.isNotEmpty;
+
   /// Whether any unused code was found (classes or methods) (T008).
-  bool get hasUnusedCode => hasUnusedClasses || hasUnusedMethods || hasUnusedVariables;
+  bool get hasUnusedCode => hasUnusedClasses || hasUnusedMethods || hasUnusedVariables || hasUnusedFields;
 
   /// Determines the appropriate exit code based on the report.
   ///
@@ -151,6 +177,27 @@ class AnalysisSummary {
   /// Number of variables ignored by configuration patterns (US5).
   final int variablesIgnoredByPattern;
 
+  /// Total number of fields analyzed (T009).
+  final int totalFieldsAnalyzed;
+
+  /// Total number of instance fields analyzed (T009).
+  final int totalInstanceFields;
+
+  /// Total number of static fields analyzed (T009).
+  final int totalStaticFields;
+
+  /// Number of unused fields detected (T009).
+  final int unusedFieldsCount;
+
+  /// Number of write-only fields detected (T009).
+  final int writeOnlyFieldsCount;
+
+  /// Number of unused field-backed properties detected (T009).
+  final int unusedFieldBackedPropertiesCount;
+
+  /// Number of fields excluded by ignore patterns (T009).
+  final int fieldsExcluded;
+
   /// Total analysis duration in milliseconds.
   final int durationMs;
 
@@ -192,6 +239,13 @@ class AnalysisSummary {
     this.variablesExplicitlyIgnored = 0,
     this.variablesIgnoredByConvention = 0,
     this.variablesIgnoredByPattern = 0,
+    this.totalFieldsAnalyzed = 0,
+    this.totalInstanceFields = 0,
+    this.totalStaticFields = 0,
+    this.unusedFieldsCount = 0,
+    this.writeOnlyFieldsCount = 0,
+    this.unusedFieldBackedPropertiesCount = 0,
+    this.fieldsExcluded = 0,
     this.precisionRate,
     this.recallRate,
   });
@@ -204,6 +258,10 @@ class AnalysisSummary {
 
   /// Variable usage rate (percentage of variables that are used) (US1).
   double get variableUsageRate => totalVariables > 0 ? (totalVariables - unusedVariableCount) / totalVariables : 0.0;
+
+  /// Field usage rate (percentage of fields that are used) (T009).
+  double get fieldUsageRate =>
+      totalFieldsAnalyzed > 0 ? (totalFieldsAnalyzed - unusedFieldsCount) / totalFieldsAnalyzed : 0.0;
 }
 
 /// A warning encountered during analysis.

@@ -24,10 +24,26 @@ The CLI runs fully offline, requires zero configuration to get started, and is b
 ## ✨ Key Capabilities
 
 - **Comprehensive coverage** – detects unused classes, enums, mixins, extensions, top-level functions, class/enum methods (instance & static), getters/setters, operators, parameters, pattern bindings, and local variables.
-- **Precision-first analysis** – over 440 automated tests guard against false positives. Lifecycle hooks (`initState`, `dispose`, etc.) and override chains are respected when `@override` annotations are present.
+- **Precision-first analysis** – over 520 automated tests guard against false positives. Lifecycle hooks (`initState`, `dispose`, etc.) and override chains are respected when `@override` annotations are present.
 - **Fast single-pass traversal** – optimized AST walking keeps run times short even on medium/large apps.
 - **Flexible ignore strategies** – use `@keepUnused`, config-driven patterns, CLI excludes, or underscores.
 - **Offline & cross-platform** – works on macOS, Linux, and Windows without talking to external services.
+
+## ⚠️ Important Notes
+
+Before removing code flagged by this tool, keep these best practices in mind:
+
+1. **Manual verification is essential** – Always review suggestions before deletion. The analyzer cannot detect dynamic type usage (e.g., `dynamic`, `Map<String, dynamic>`), which is common in request/response models, JSON serialization, and reflection-based frameworks.
+
+2. **Follow the recommended cleanup order** – Start with **classes and types** first, then move to **functions and methods**, and finally **variables**. This order minimizes cascading false positives as removing unused classes naturally eliminates their methods and fields.
+
+3. **Use version control** – Always perform cleanup in a **separate branch** (e.g., `refactor/remove-dead-code`) so you can easily revert changes if needed. Run your full test suite before merging to catch any incorrectly removed code.
+
+4. **Test before you delete** – Run your complete test suite after each batch of removals. Missing test coverage might mean the analyzer correctly identified unused code, or that you need more tests to verify the code is actually used.
+
+5. **Incremental approach for large projects** – Don't try to clean everything at once. Break the work into smaller PRs (e.g., one module at a time) to make reviews easier and reduce the risk of breaking changes.
+
+6. **Platform-specific code** – Be cautious with platform channels and native integrations. Code accessed via method channels or platform-specific implementations may not be detected by static analysis.
 
 ## 🔍 What It Detects
 
@@ -54,9 +70,19 @@ The CLI runs fully offline, requires zero configuration to get started, and is b
 - Catch clause variables (opt-in)
 - Write-only detection for assigned-but-never-read variables
 
+### ✅ Fields & Properties
+
+- **Instance fields** – public and private fields in classes, enums, and mixins
+- **Static fields** – const, final, and var class/enum fields
+- **Getter-only properties** – computed properties without backing fields
+- **Field-backed properties** – transitive detection when both field and getter/setter are unused
+- **Write-only field detection** – fields assigned but never read
+- **Enhanced enum fields** – instance and static fields in Dart 2.17+ enums
+- **Mixin field tracking** – fields declared in mixins across application sites
+- **Advanced patterns** – string interpolation (`$field`), cascade operations (`obj..field`), equality operators (`operator==`, `hashCode`), compound assignments (`+=`, `*=`, etc.)
+
 ## 🔜 Roadmap
 
-- Unused field and property detection for classes
 - Smarter override detection without requiring explicit `@override`
 - Unused type alias (`typedef`) detection
 - Incremental analysis mode for large monorepos
@@ -77,7 +103,7 @@ or manually in `pubspec.yaml`:
 
 ```yaml
 dev_dependencies:
-  flutter_prunekit: ^2.2.0
+  flutter_prunekit: ^2.4.0
 ```
 
 Then fetch dependencies:

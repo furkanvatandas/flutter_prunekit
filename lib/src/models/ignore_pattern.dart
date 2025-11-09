@@ -1,4 +1,5 @@
 import 'package:glob/glob.dart';
+import 'field_declaration.dart';
 
 /// Represents a pattern for excluding files, classes, methods, or variables from analysis.
 ///
@@ -90,6 +91,40 @@ class IgnorePattern {
     return false;
   }
 
+  /// Checks if a field matches this pattern (T010).
+  ///
+  /// For field patterns like:
+  /// - `fieldName` - exact field name match
+  /// - `_internal*` - prefix match (e.g., `_internalCache`, `_internalData`)
+  /// - `serialization*` - pattern match
+  /// - `**/*_cache` - any field ending with `_cache` in any class
+  /// - `ClassName.fieldName` - fully qualified field pattern
+  bool matchesField(FieldDeclaration field) {
+    if (type != IgnorePatternType.field) {
+      return false;
+    }
+
+    // Handle fully qualified patterns (ClassName.fieldName)
+    if (pattern.contains('.')) {
+      final parts = pattern.split('.');
+      if (parts.length >= 2) {
+        final classPattern = parts.take(parts.length - 1).join('.');
+        final fieldPattern = parts.last;
+
+        // Match class name
+        if (!Glob(classPattern).matches(field.declaringType)) {
+          return false;
+        }
+
+        // Match field name
+        return Glob(fieldPattern).matches(field.name);
+      }
+    }
+
+    // Simple field name pattern
+    return _glob.matches(field.name);
+  }
+
   /// Returns the priority of this pattern source.
   ///
   /// Higher priority patterns take precedence:
@@ -135,6 +170,9 @@ enum IgnorePatternType {
 
   /// Pattern matches parameter names (e.g., `_unused*`).
   parameter,
+
+  /// Pattern matches field names (e.g., `_internal*`, `serialization*`) (T010).
+  field,
 }
 
 /// The source of an ignore pattern.

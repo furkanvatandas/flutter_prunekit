@@ -15,6 +15,7 @@ import '../models/analysis_report.dart';
 import '../models/method_declaration.dart';
 import '../models/variable_types.dart';
 import '../models/variable_declaration.dart';
+import '../models/field_declaration.dart';
 import '../utils/dart_analyzer_wrapper.dart';
 
 String _getGlobalUsage() => '''
@@ -216,6 +217,8 @@ Future<int> run(List<String> args) async {
         includeMethods ? detector.findUnusedMethods(graph) : <MethodDeclaration>[];
     final List<VariableDeclaration> unusedVariables =
         includeVariables ? detector.detectUnusedVariables(graph) : <VariableDeclaration>[];
+    final List<FieldDeclaration> unusedFields = detector.detectUnusedFields(graph);
+    final List<FieldDeclaration> writeOnlyFields = detector.detectWriteOnlyFields(graph);
 
     if (!arguments.quiet && arguments.verbose) {
       print('─────────────────────────────────\n');
@@ -315,6 +318,8 @@ Future<int> run(List<String> args) async {
       unusedClasses: unusedClasses,
       unusedMethods: unusedMethods, // T035: Add method reporting
       unusedVariables: unusedVariables,
+      unusedFields: unusedFields,
+      writeOnlyFields: writeOnlyFields,
       summary: AnalysisSummary(
         totalFiles: filesToAnalyze.length,
         totalClasses: includeTypes ? stats.totalDeclarations : 0,
@@ -340,6 +345,12 @@ Future<int> run(List<String> args) async {
         variablesExplicitlyIgnored: includeVariables ? unusedStats.variablesIgnoredByExplicitIgnore : 0,
         variablesIgnoredByConvention: includeVariables ? unusedStats.variablesIgnoredByConvention : 0,
         variablesIgnoredByPattern: includeVariables ? unusedStats.variablesIgnoredByPattern : 0,
+        totalFieldsAnalyzed: graph.fieldDeclarations.length,
+        totalInstanceFields: graph.fieldDeclarations.values.where((f) => f.fieldType == FieldType.instance).length,
+        totalStaticFields: graph.fieldDeclarations.values.where((f) => f.fieldType == FieldType.static).length,
+        unusedFieldsCount: unusedFields.length,
+        writeOnlyFieldsCount: writeOnlyFields.length,
+        fieldsExcluded: 0, // TODO: Add field ignore statistics to UnusedDetector
       ),
       warnings: allWarnings,
     );

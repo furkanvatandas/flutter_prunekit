@@ -17,13 +17,18 @@ import '../models/variable_declaration.dart' as variable_model;
 import '../models/parameter_declaration.dart' as parameter_model;
 import '../models/variable_reference.dart' as variable_ref;
 import '../models/variable_types.dart';
+import '../models/field_declaration.dart' as field_model;
+import '../models/field_access.dart' as field_access_model;
 import '../services/pattern_variable_extractor.dart';
+import '../services/field_classifier.dart';
 import '../utils/dart_analyzer_wrapper.dart';
 import '../utils/part_file_detector.dart';
 import '../utils/extension_resolver.dart';
 import '../services/variable_scope_tracker.dart';
 import '../utils/underscore_convention_checker.dart';
 import '../utils/string_interpolation_tracker.dart';
+import '../utils/constructor_field_tracker.dart';
+import '../utils/equality_operator_tracker.dart';
 
 /// Analyzes Dart AST to extract class declarations and references.
 ///
@@ -74,6 +79,10 @@ class ASTAnalyzer {
   ///
   /// **Performance Optimization (T072)**: Uses early termination - if a quick
   /// scan shows no class declarations, skips expensive AST parsing.
+  ///
+  /// **Part File Handling**: Automatically analyzes part files (including .g.dart
+  /// generated files) when analyzing their parent library. This ensures field
+  /// accesses in generated code are properly tracked.
   Future<FileAnalysisResult?> analyzeFile(String filePath) async {
     try {
       // T072: Early termination - skip files with no declarations
@@ -143,12 +152,27 @@ class ASTAnalyzer {
         lineInfo: lineInfo,
         scopeTracker: variableScopeTracker,
       );
+      final fieldVisitor = _FieldCollectorVisitor(
+        filePath: filePath,
+        lineInfo: lineInfo,
+      );
 
       resolvedUnit.unit.visitChildren(declarationVisitor);
       resolvedUnit.unit.visitChildren(referenceVisitor);
       resolvedUnit.unit.visitChildren(functionVisitor);
       resolvedUnit.unit.visitChildren(invocationVisitor);
       variableVisitor.collect(resolvedUnit.unit);
+      fieldVisitor.collect(resolvedUnit.unit);
+
+      // Analyze part files (including .g.dart generated files) to track field accesses
+      // in generated code like toJson/fromJson methods
+      final partFileResults = await _analyzePartFiles(filePath);
+
+      // Merge field accesses from part files into the parent file result
+      final allFieldAccesses = [
+        ...fieldVisitor.accesses,
+        ...partFileResults.expand((r) => r.fieldAccesses),
+      ];
 
       return FileAnalysisResult(
         filePath: filePath,
@@ -159,6 +183,8 @@ class ASTAnalyzer {
         methodInvocations: invocationVisitor.invocations,
         variableDeclarations: variableVisitor.declarations,
         variableReferences: variableVisitor.references,
+        fieldDeclarations: fieldVisitor.declarations,
+        fieldAccesses: allFieldAccesses,
       );
     } catch (e) {
       // Catch any unexpected errors during analysis
@@ -168,6 +194,101 @@ class ASTAnalyzer {
         filePath: filePath,
         isFatal: true, // Fatal: partial analysis (unexpected error prevented analysis)
       ));
+      return null;
+    }
+  }
+
+  /// Analyzes part files declared in a library file.
+  ///
+  /// Returns a list of analysis results for successfully analyzed part files.
+  /// This includes .g.dart generated files which are excluded from the main
+  /// file scan but need to be analyzed to track field accesses in generated code.
+  Future<List<FileAnalysisResult>> _analyzePartFiles(String libraryPath) async {
+    try {
+      // Read the library file to find part directives
+      final file = File(libraryPath);
+      if (!await file.exists()) {
+        return [];
+      }
+
+      final content = await file.readAsString();
+
+      // Match part directives: part 'filename.dart';
+      final partDirectiveRegex = RegExp(r'''part\s+['"]([^'"]+)['"];''');
+      final matches = partDirectiveRegex.allMatches(content);
+
+      if (matches.isEmpty) {
+        return []; // No part files
+      }
+
+      final results = <FileAnalysisResult>[];
+      final libraryDir = file.parent.path;
+
+      for (final match in matches) {
+        final partFileName = match.group(1);
+        if (partFileName == null) continue;
+
+        final partFilePath = File('$libraryDir/$partFileName').absolute.path;
+
+        // Check if part file exists
+        if (!await File(partFilePath).exists()) {
+          continue;
+        }
+
+        // Analyze the part file
+        final partResult = await _analyzePartFile(partFilePath, libraryPath);
+        if (partResult != null) {
+          results.add(partResult);
+        }
+      }
+
+      return results;
+    } catch (e) {
+      // Don't fail the main analysis if part file analysis fails
+      return [];
+    }
+  }
+
+  /// Analyzes a single part file.
+  ///
+  /// Similar to analyzeFile but skips certain checks and only extracts
+  /// field accesses (since declarations are in the parent library).
+  Future<FileAnalysisResult?> _analyzePartFile(
+    String partFilePath,
+    String parentLibraryPath,
+  ) async {
+    try {
+      final resolvedUnit = await _analyzer.parseFile(partFilePath);
+
+      if (resolvedUnit == null) {
+        return null;
+      }
+
+      final lineInfo = resolvedUnit.lineInfo;
+
+      // For part files, we primarily care about field accesses
+      // (e.g., in generated toJson/fromJson methods)
+      final fieldVisitor = _FieldCollectorVisitor(
+        filePath: partFilePath,
+        lineInfo: lineInfo,
+      );
+
+      fieldVisitor.collect(resolvedUnit.unit);
+
+      // Return a minimal result with only field accesses
+      return FileAnalysisResult(
+        filePath: partFilePath,
+        declarations: [],
+        references: [],
+        hasDynamicTypeUsage: false,
+        methodDeclarations: [],
+        methodInvocations: [],
+        variableDeclarations: [],
+        variableReferences: [],
+        fieldDeclarations: [],
+        fieldAccesses: fieldVisitor.accesses,
+      );
+    } catch (e) {
       return null;
     }
   }
@@ -285,6 +406,16 @@ class _ClassDeclarationVisitor extends RecursiveAstVisitor<void> {
 
   @override
   void visitClassDeclaration(ClassDeclaration node) {
+    // Extract superclass name if exists
+    String? superclassName;
+    if (node.extendsClause != null) {
+      final supertype = node.extendsClause!.superclass;
+      // Get the class name, handling both simple and prefixed identifiers
+      if (supertype.name2.lexeme != 'Object') {
+        superclassName = supertype.name2.lexeme;
+      }
+    }
+
     declarations.add(
       model.ClassDeclaration(
         name: node.name.lexeme,
@@ -293,6 +424,7 @@ class _ClassDeclarationVisitor extends RecursiveAstVisitor<void> {
         kind: node.abstractKeyword != null ? model.ClassKind.abstractClass : model.ClassKind.class_,
         isPrivate: node.name.lexeme.startsWith('_'),
         annotations: _extractAnnotations(node.metadata),
+        superclass: superclassName,
       ),
     );
     super.visitClassDeclaration(node);
@@ -615,13 +747,16 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
 
     if (target == null) {
       // No target: either top-level function or implicit this (instance method in same class)
-      // Check if we're inside a class context by traversing up the AST
+      // Check if we're inside a class/enum context by traversing up the AST
       AstNode? current = node.parent;
       ClassDeclaration? enclosingClass;
+      EnumDeclaration? enclosingEnum;
 
-      while (current != null && enclosingClass == null) {
+      while (current != null && enclosingClass == null && enclosingEnum == null) {
         if (current is ClassDeclaration) {
           enclosingClass = current;
+        } else if (current is EnumDeclaration) {
+          enclosingEnum = current;
         }
         current = current.parent;
       }
@@ -643,6 +778,20 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
         } else {
           // Fallback to enclosing class if semantic resolution fails
           targetClass = enclosingClass.name.lexeme;
+        }
+        invocationType = invocation_model.InvocationType.instance;
+      } else if (enclosingEnum != null) {
+        // We're inside an enum - this is an implicit 'this' call on enum instance
+        final methodElement = node.methodName.element;
+        if (methodElement is MethodElement) {
+          final declaringEnum = methodElement.enclosingElement;
+          if (declaringEnum != null && declaringEnum.name != null) {
+            targetClass = declaringEnum.name!;
+          } else {
+            targetClass = enclosingEnum.name.lexeme;
+          }
+        } else {
+          targetClass = enclosingEnum.name.lexeme;
         }
         invocationType = invocation_model.InvocationType.instance;
       } else {
@@ -723,17 +872,27 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
       // 2. Instance call (object.property.method) → use property type as targetClass
 
       final prefixElement = target.prefix.element;
+      final identifierElement = target.identifier.element;
 
-      if (prefixElement is ClassElement ||
-          prefixElement is ExtensionElement ||
-          prefixElement is EnumElement ||
-          prefixElement is MixinElement) {
-        // Case 1: Static call - prefix is a class/type name
+      // Determine if this is truly a static call or instance call through a property
+      // Check if identifier is a static/instance field/getter that returns an object
+      final bool isPropertyAccess = identifierElement is PropertyAccessorElement || identifierElement is FieldElement;
+
+      if ((prefixElement is ClassElement ||
+              prefixElement is ExtensionElement ||
+              prefixElement is EnumElement ||
+              prefixElement is MixinElement) &&
+          !isPropertyAccess) {
+        // Case 1: Static call - prefix is a class/type name AND identifier is a method
+        // e.g., MyClass.staticMethod()
         targetClass = target.prefix.name;
         invocationType = invocation_model.InvocationType.static;
       } else {
-        // Case 2: Instance call - prefix is a variable/field, use semantic type
+        // Case 2: Instance call - either:
+        // - prefix is a variable/field, use semantic type
+        // - OR prefix is a class but identifier is a property (EnvConfig.curEnv.method())
         // e.g., Logger.instance.log() where Logger.instance is of type Logger
+        // e.g., EnvConfig.curEnv.versionText() where curEnv returns Env type
         invocationType = invocation_model.InvocationType.instance;
 
         if (targetType != null && targetType is! DynamicType) {
@@ -912,15 +1071,15 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
       return;
     }
 
-    // T026m: Track static method tear-offs (e.g., .map(ClassName.staticMethod))
+    // T026m: Track static method tear-offs (e.g., .map(ClassName.staticMethod) or .map(EnumName.staticMethod))
     // Check if this is a static method used as a tear-off
     final prefix = node.prefix;
     final identifier = node.identifier;
     final prefixElement = prefix.element;
     final identifierElement = identifier.element;
 
-    // Static method tear-off: ClassName.methodName (without parentheses)
-    if (prefixElement is ClassElement && identifierElement is MethodElement) {
+    // Static method tear-off: ClassName.methodName or EnumName.methodName (without parentheses)
+    if ((prefixElement is ClassElement || prefixElement is EnumElement) && identifierElement is MethodElement) {
       // Check if this is in a tear-off context (passed as argument, assigned to variable, etc.)
       if (_isTearOffContextForPrefixed(node)) {
         _addInvocation(
@@ -941,9 +1100,10 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
     String? targetClass;
     invocation_model.InvocationType invocationType;
 
-    // Check if this is a static property access (ClassName.staticGetter)
-    if (prefixElement is ClassElement && identifierElement is PropertyAccessorElement) {
-      // Static property access: MyClass.myGetter
+    // Check if this is a static property access (ClassName.staticGetter or EnumName.staticGetter)
+    if ((prefixElement is ClassElement || prefixElement is EnumElement) &&
+        identifierElement is PropertyAccessorElement) {
+      // Static property access: MyClass.myGetter or MyEnum.myGetter
       targetClass = prefix.name;
       invocationType = identifierElement.isStatic
           ? invocation_model.InvocationType.static
@@ -1278,10 +1438,12 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
       return;
     }
 
-    // T026o-1: Track implicit this getters used in PropertyAccess chains
-    // Pattern: userAddress.city, duty.property in "$duty.property"
-    // If parent is PropertyAccess and we're the target (not propertyName), record
-    if (parent is PropertyAccess && parent.propertyName != node) {
+    // T026o-1: Track implicit this getters/fields used in PropertyAccess and PrefixedIdentifier chains
+    // Pattern: userAddress.city, duty.property, flightWaterState.flightWater
+    // PropertyAccess: complex expressions like getObject().property
+    // PrefixedIdentifier: simple chains like obj.property
+    if ((parent is PropertyAccess && parent.propertyName != node) ||
+        (parent is PrefixedIdentifier && parent.identifier != node)) {
       // Find enclosing class/mixin
       AstNode? current = node;
       String? targetClass;
@@ -1300,6 +1462,7 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
       if (targetClass != null) {
         // Check if this is actually a getter/field by looking at element
         final targetElement = node.element;
+
         if (targetElement is PropertyAccessorElement || targetElement is VariableElement) {
           _addInvocation(
             methodName: node.name,
@@ -1313,34 +1476,56 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
     }
 
     // T026o-2: Check if this is in string interpolation and is implicit this getter
-    // Pattern: "Hello $name" where name is a getter in same class
+    // Pattern: "Hello $name" where name is a getter in same class or extension
     if (parent is InterpolationExpression) {
       final element = node.element;
       if (element is PropertyAccessorElement && !element.isStatic) {
-        // Check if we're in a class/mixin context
-        AstNode? current = node;
-        while (current != null) {
-          if (current is ClassDeclaration || current is MixinDeclaration) {
-            // Found enclosing class/mixin - this is implicit this getter in string interpolation
-            String? targetClass;
-            if (current is ClassDeclaration) {
-              targetClass = current.name.lexeme;
-            } else if (current is MixinDeclaration) {
-              targetClass = current.name.lexeme;
-            }
+        // For inherited properties, use the DECLARING class, not the enclosing class
+        // Example: "$lmtSuffix" in VacationActivity where lmtSuffix is declared in Activity
+        String? targetClass;
+        invocation_model.InvocationType invocationType = invocation_model.InvocationType.instance;
 
-            if (targetClass != null) {
-              _addInvocation(
-                methodName: node.name,
-                targetClass: targetClass,
-                offset: node.offset,
-                invocationType: invocation_model.InvocationType.instance,
-                element: element,
-              );
+        // First try to get declaring class/extension from the property element
+        final declaringElement = element.enclosingElement;
+        if (declaringElement is ClassElement) {
+          targetClass = declaringElement.name;
+        } else if (declaringElement is MixinElement) {
+          targetClass = declaringElement.name;
+        } else if (declaringElement is ExtensionElement) {
+          // Extension method getter in string interpolation (e.g., "$getExtension" in extension)
+          final extensionName = declaringElement.name;
+          targetClass = (extensionName == null || extensionName.isEmpty) ? 'unnamed' : extensionName;
+          invocationType = invocation_model.InvocationType.extension;
+        }
+
+        // Fallback: find enclosing class/extension if declaring class not available
+        if (targetClass == null) {
+          AstNode? current = node;
+          while (current != null) {
+            if (current is ClassDeclaration || current is MixinDeclaration || current is ExtensionDeclaration) {
+              if (current is ClassDeclaration) {
+                targetClass = current.name.lexeme;
+              } else if (current is MixinDeclaration) {
+                targetClass = current.name.lexeme;
+              } else if (current is ExtensionDeclaration) {
+                final extensionName = current.name?.lexeme;
+                targetClass = (extensionName == null || extensionName.isEmpty) ? 'unnamed' : extensionName;
+                invocationType = invocation_model.InvocationType.extension;
+              }
               break;
             }
+            current = current.parent;
           }
-          current = current.parent;
+        }
+
+        if (targetClass != null) {
+          _addInvocation(
+            methodName: node.name,
+            targetClass: targetClass,
+            offset: node.offset,
+            invocationType: invocationType,
+            element: element,
+          );
         }
       }
       super.visitSimpleIdentifier(node);
@@ -1381,6 +1566,92 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
       }
     }
 
+    // Check if this is an implicit this getter/method used in a closure body
+    // Pattern: enabled: () => enabled, callback: () { print(myGetter); }
+    if (parent is ExpressionFunctionBody || parent is BlockFunctionBody) {
+      final element = node.element;
+      if (element is PropertyAccessorElement && !element.isStatic) {
+        // Find enclosing class/mixin/extension
+        AstNode? current = node;
+        String? targetClass;
+        invocation_model.InvocationType invocationType = invocation_model.InvocationType.instance;
+
+        while (current != null) {
+          if (current is ClassDeclaration) {
+            targetClass = current.name.lexeme;
+            break;
+          } else if (current is MixinDeclaration) {
+            targetClass = current.name.lexeme;
+            break;
+          } else if (current is ExtensionDeclaration) {
+            final extensionName = current.name?.lexeme;
+            targetClass = (extensionName == null || extensionName.isEmpty) ? 'unnamed' : extensionName;
+            invocationType = invocation_model.InvocationType.extension;
+            break;
+          }
+          current = current.parent;
+        }
+
+        if (targetClass != null) {
+          _addInvocation(
+            methodName: node.name,
+            targetClass: targetClass,
+            offset: node.offset,
+            invocationType: invocationType,
+            element: element,
+          );
+        }
+      }
+      super.visitSimpleIdentifier(node);
+      return;
+    }
+
+    // Check if this is a standalone implicit this getter/field
+    // Pattern: if (isEmpty), return !isValid, while (hasData)
+    // This catches cases where a getter is used directly without being part of a larger expression
+    final element = node.element;
+    if (element is PropertyAccessorElement && !element.isStatic) {
+      // Check if we're inside a class/mixin/enum/extension
+      AstNode? current = node;
+      String? targetClass;
+      invocation_model.InvocationType invocationType = invocation_model.InvocationType.instance;
+
+      while (current != null) {
+        if (current is ClassDeclaration) {
+          targetClass = current.name.lexeme;
+          break;
+        } else if (current is MixinDeclaration) {
+          targetClass = current.name.lexeme;
+          break;
+        } else if (current is EnumDeclaration) {
+          targetClass = current.name.lexeme;
+          break;
+        } else if (current is ExtensionDeclaration) {
+          final extensionName = current.name?.lexeme;
+          targetClass = (extensionName == null || extensionName.isEmpty) ? 'unnamed' : extensionName;
+          invocationType = invocation_model.InvocationType.extension;
+          break;
+        }
+        current = current.parent;
+      }
+
+      if (targetClass != null) {
+        // Verify this getter belongs to the enclosing class (not a parameter or local variable)
+        final declaringElement = element.enclosingElement;
+        if (declaringElement is InterfaceElement && declaringElement.name == targetClass) {
+          _addInvocation(
+            methodName: node.name,
+            targetClass: targetClass,
+            offset: node.offset,
+            invocationType: invocationType,
+            element: element,
+          );
+          super.visitSimpleIdentifier(node);
+          return;
+        }
+      }
+    }
+
     // T078: Check if this is a tear-off by examining context
     final isTearOff = _isTearOffContext(node);
     if (!isTearOff) {
@@ -1389,7 +1660,7 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
     }
 
     // Use semantic resolution to determine if this is a function/method reference
-    final element = node.element;
+    // Note: element already retrieved above for standalone getter check
     if (element == null) {
       super.visitSimpleIdentifier(node);
       return;
@@ -1459,8 +1730,10 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
       if (current is ArgumentList) return true;
 
       // Named argument: CustomWidget(builder: buildCard)
+      // Also handles record literal fields: ({field: value})
       if (current is NamedExpression) {
-        return current.parent is ArgumentList;
+        final parent = current.parent;
+        return parent is ArgumentList || parent is RecordLiteral;
       }
 
       // Right side of variable assignment: var fn = square;
@@ -1511,8 +1784,10 @@ class _FunctionInvocationVisitor extends RecursiveAstVisitor<void> {
       if (current is ArgumentList) return true;
 
       // Named argument: CustomWidget(parser: Model.fromJson)
+      // Also handles record literal fields: ({field: value})
       if (current is NamedExpression) {
-        return current.parent is ArgumentList;
+        final parent = current.parent;
+        return parent is ArgumentList || parent is RecordLiteral;
       }
 
       // Right side of variable assignment: var fn = Model.fromJson;
@@ -1694,13 +1969,22 @@ class _VariableCollectorVisitor extends RecursiveAstVisitor<void> {
       return;
     }
 
+    // Check if this closure is part of an API contract that should be ignored:
+    // 1. Named argument value (e.g., builder: (context) => ...)
+    // 2. Collection method callback (e.g., list.forEach((item) => ...))
+    final isApiContractClosure = _isApiContractClosure(node);
+
     final body = node.body;
     final scope = _pushScopeForNode(
       body,
       ScopeType.closure,
       enclosingDeclaration: _buildClosureName(body),
     );
-    _registerParameters(node.parameters, scope);
+
+    // Only register parameters if this is NOT an API contract closure
+    if (!isApiContractClosure) {
+      _registerParameters(node.parameters, scope);
+    }
 
     try {
       super.visitFunctionExpression(node);
@@ -2265,8 +2549,21 @@ class _VariableCollectorVisitor extends RecursiveAstVisitor<void> {
   }
 
   Token? _resolveParameterNameToken(FormalParameter parameter) {
-    final target = parameter is DefaultFormalParameter ? parameter.parameter : parameter;
-    Token? token = target.beginToken;
+    // For SimpleFormalParameter and FieldFormalParameter, use the identifier directly
+    final baseParameter = parameter is DefaultFormalParameter ? parameter.parameter : parameter;
+
+    if (baseParameter is SimpleFormalParameter) {
+      return baseParameter.name;
+    } else if (baseParameter is FieldFormalParameter) {
+      return baseParameter.name;
+    } else if (baseParameter is SuperFormalParameter) {
+      return baseParameter.name;
+    } else if (baseParameter is FunctionTypedFormalParameter) {
+      return baseParameter.name;
+    }
+
+    // Fallback to old token-based approach for other cases
+    Token? token = baseParameter.beginToken;
     Token? lastIdentifier;
 
     while (token != null) {
@@ -2281,7 +2578,7 @@ class _VariableCollectorVisitor extends RecursiveAstVisitor<void> {
         }
       }
 
-      if (identical(token, target.endToken)) {
+      if (identical(token, baseParameter.endToken)) {
         break;
       }
 
@@ -2329,6 +2626,171 @@ class _VariableCollectorVisitor extends RecursiveAstVisitor<void> {
     }
 
     return comments;
+  }
+
+  /// Checks if a FunctionExpression is part of an API contract that should be ignored.
+  ///
+  /// This includes:
+  /// 1. Named argument closures: builder: (context) => Widget()
+  /// 2. Collection method callbacks: list.forEach((item) => ...)
+  ///
+  /// These closures' parameters are typically part of an API contract and should
+  /// not be flagged as unused even if not referenced in the closure body.
+  bool _isApiContractClosure(FunctionExpression node) {
+    // Check if this is a named argument closure
+    if (_isNamedArgumentClosure(node)) {
+      return true;
+    }
+
+    // Check if this is a collection/iteration method callback
+    if (_isCollectionMethodCallback(node)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /// Checks if a FunctionExpression is passed as a named argument value.
+  bool _isNamedArgumentClosure(FunctionExpression node) {
+    AstNode? current = node.parent;
+
+    // Traverse up to check if this is a named argument
+    while (current != null) {
+      if (current is NamedExpression) {
+        // This closure is the value of a named argument
+        return true;
+      }
+
+      // Stop if we reach certain boundaries
+      if (current is ArgumentList ||
+          current is FunctionDeclaration ||
+          current is MethodDeclaration ||
+          current is VariableDeclaration) {
+        break;
+      }
+
+      current = current.parent;
+    }
+
+    return false;
+  }
+
+  /// Checks if a FunctionExpression is a callback to common collection/iteration methods.
+  ///
+  /// Examples:
+  /// - list.forEach((item) => ...)
+  /// - map.forEach((key, value) => ...)
+  /// - items.map((e) => ...)
+  /// - items.where((e) => ...)
+  /// - items.any((e) => ...)
+  /// - items.every((e) => ...)
+  /// - items.expand((e) => ...)
+  /// - items.fold(0, (acc, e) => ...)
+  /// - items.reduce((a, b) => ...)
+  bool _isCollectionMethodCallback(FunctionExpression node) {
+    final parent = node.parent;
+
+    // Must be in an argument list
+    if (parent is! ArgumentList) {
+      return false;
+    }
+
+    // Get the method invocation
+    final methodInvocation = parent.parent;
+    if (methodInvocation is! MethodInvocation) {
+      return false;
+    }
+
+    // Check if it's one of the common collection/callback methods
+    final methodName = methodInvocation.methodName.name;
+    const callbackMethods = {
+      // Collection iteration methods
+      'forEach',
+      'map',
+      'where',
+      'whereType',
+      'expand',
+
+      // Reduction methods
+      'reduce',
+      'fold',
+      'firstWhere',
+      'lastWhere',
+      'singleWhere',
+
+      // Boolean test methods
+      'any',
+      'every',
+
+      // Collection modification methods
+      'removeWhere',
+      'retainWhere',
+
+      // Sorting/ordering
+      'sort',
+      'toList',
+      'toSet',
+
+      // Grouping
+      'groupBy',
+      'partition',
+
+      // Other common functional methods
+      'takeWhile',
+      'skipWhile',
+      'followedBy',
+      'cast',
+      'retype',
+
+      // Async iteration
+      'listen',
+      'asyncMap',
+      'asyncExpand',
+      'asyncWhere',
+
+      // Flutter lifecycle callbacks
+      'addPostFrameCallback',
+      'addPersistentFrameCallback',
+      'scheduleFrameCallback',
+      'addTimingsCallback',
+
+      // Flutter widget callbacks
+      'setState',
+      'addListener',
+      'removeListener',
+      'addStatusListener',
+      'removeStatusListener',
+
+      // Future/async callbacks
+      'then',
+      'catchError',
+      'whenComplete',
+      'timeout',
+
+      // Stream callbacks
+      'handleData',
+      'handleError',
+      'handleDone',
+
+      // Timer/scheduler callbacks
+      'scheduleMicrotask',
+      'Future.delayed',
+      'Timer',
+      'Timer.periodic',
+
+      // Testing/mocking common methods
+      'when',
+      'thenAnswer',
+      'thenReturn',
+      'verify',
+      'verifyNever',
+
+      // Animation callbacks
+      'animate',
+      'drive',
+    };
+
+    return callbackMethods.contains(methodName);
   }
 
   ScopeContext _pushScopeForNode(
@@ -2871,6 +3333,1783 @@ class _ClassReferenceVisitor extends RecursiveAstVisitor<void> {
   }
 }
 
+/// Visitor that extracts field declarations and accesses for field analysis (T016).
+class _FieldCollectorVisitor extends RecursiveAstVisitor<void> {
+  final String filePath;
+  final LineInfo lineInfo;
+  final FieldClassifier fieldClassifier;
+  final ConstructorFieldTracker constructorFieldTracker;
+  final EqualityOperatorTracker equalityOperatorTracker;
+  final StringInterpolationTracker stringInterpolationTracker;
+
+  final List<field_model.FieldDeclaration> declarations = [];
+  final List<field_access_model.FieldAccess> accesses = [];
+
+  /// T057: Track offsets of identifiers within string interpolations
+  final Set<int> _stringInterpolationOffsets = <int>{};
+
+  _FieldCollectorVisitor({
+    required this.filePath,
+    required this.lineInfo,
+    FieldClassifier? fieldClassifier,
+    ConstructorFieldTracker? constructorFieldTracker,
+    EqualityOperatorTracker? equalityOperatorTracker,
+    StringInterpolationTracker? stringInterpolationTracker,
+  })  : fieldClassifier = fieldClassifier ?? const FieldClassifier(),
+        constructorFieldTracker = constructorFieldTracker ?? ConstructorFieldTracker(),
+        equalityOperatorTracker = equalityOperatorTracker ?? EqualityOperatorTracker(),
+        stringInterpolationTracker = stringInterpolationTracker ?? const StringInterpolationTracker();
+
+  /// Traverses the compilation unit and collects field information.
+  void collect(CompilationUnit unit) {
+    unit.accept(this);
+  }
+
+  @override
+  void visitFieldDeclaration(FieldDeclaration node) {
+    // Get parent to determine declaring type
+    final parent = node.parent;
+
+    // Skip if not a class/mixin/enum/extension type member
+    if (parent is! ClassDeclaration &&
+        parent is! MixinDeclaration &&
+        parent is! EnumDeclaration &&
+        parent is! ExtensionTypeDeclaration) {
+      super.visitFieldDeclaration(node);
+      return;
+    }
+
+    // Get declaring type name
+    final declaringType = parent is ClassDeclaration
+        ? parent.name.lexeme
+        : parent is MixinDeclaration
+            ? parent.name.lexeme
+            : parent is EnumDeclaration
+                ? parent.name.lexeme
+                : (parent as ExtensionTypeDeclaration).name.lexeme;
+
+    // Get declaring type kind
+    final declaringTypeKind = parent is ClassDeclaration
+        ? field_model.FieldDeclaringTypeKind.classType
+        : parent is MixinDeclaration
+            ? field_model.FieldDeclaringTypeKind.mixin
+            : parent is EnumDeclaration
+                ? field_model.FieldDeclaringTypeKind.enum_
+                : field_model.FieldDeclaringTypeKind.extensionType;
+
+    final fields = node.fields;
+    final isStatic = node.isStatic;
+    final isFinal = fields.isFinal;
+    final isConst = fields.isConst;
+    final isLate = fields.isLate;
+
+    final mutability = isConst
+        ? field_model.FieldMutability.const_
+        : isFinal
+            ? field_model.FieldMutability.final_
+            : isLate
+                ? field_model.FieldMutability.late
+                : field_model.FieldMutability.var_;
+
+    final fieldType = isStatic ? field_model.FieldType.static : field_model.FieldType.instance;
+
+    // T052: Check if parent class/enum/mixin has @keepUnused annotation
+    List<String> classAnnotations = [];
+    if (parent is ClassDeclaration) {
+      classAnnotations = _extractAnnotations(parent.metadata);
+    } else if (parent is MixinDeclaration) {
+      classAnnotations = _extractAnnotations(parent.metadata);
+    } else if (parent is EnumDeclaration) {
+      classAnnotations = _extractAnnotations(parent.metadata);
+    } else if (parent is ExtensionTypeDeclaration) {
+      classAnnotations = _extractAnnotations(parent.metadata);
+    }
+    final classHasKeepUnused = classAnnotations.any((ann) => ann.toLowerCase() == 'keepunused');
+
+    for (final variable in fields.variables) {
+      final identifier = variable.name;
+      final location = lineInfo.getLocation(identifier.offset);
+
+      // T052: Inherit @keepUnused from class if field doesn't have it
+      final fieldAnnotations = _extractAnnotations(node.metadata);
+      final finalAnnotations = classHasKeepUnused && !fieldAnnotations.contains('keepUnused')
+          ? [...fieldAnnotations, 'keepUnused']
+          : fieldAnnotations;
+
+      final declaration = field_model.FieldDeclaration(
+        name: identifier.lexeme,
+        filePath: filePath,
+        lineNumber: location.lineNumber,
+        columnNumber: location.columnNumber - 1,
+        declaringType: declaringType,
+        declaringTypeKind: declaringTypeKind,
+        fieldType: fieldType,
+        mutability: mutability,
+        visibility: _resolveVisibility(identifier.lexeme),
+        annotations: finalAnnotations,
+        isEnumInstanceField: declaringTypeKind == field_model.FieldDeclaringTypeKind.enum_ && !isStatic,
+        isExtensionTypeRepresentation: false, // TODO: Improve detection
+      );
+
+      declarations.add(declaration);
+    }
+
+    super.visitFieldDeclaration(node);
+  }
+
+  @override
+  void visitConstructorDeclaration(ConstructorDeclaration node) {
+    // T020: Track field writes in constructor
+    // We'll handle this by visiting the specific AST nodes within the constructor
+    super.visitConstructorDeclaration(node);
+  }
+
+  @override
+  void visitFieldFormalParameter(FieldFormalParameter node) {
+    // T020: Track this.field parameters in constructors
+    final fieldName = node.name.lexeme;
+
+    // Get declaring class name by traversing up to constructor
+    String? declaringType;
+    AstNode? current = node.parent;
+    while (current != null) {
+      if (current is ClassDeclaration) {
+        declaringType = current.name.lexeme;
+        break;
+      } else if (current is EnumDeclaration) {
+        declaringType = current.name.lexeme;
+        break;
+      }
+      current = current.parent;
+    }
+
+    if (declaringType == null) {
+      super.visitFieldFormalParameter(node);
+      return;
+    }
+
+    final location = lineInfo.getLocation(node.offset);
+
+    final access = field_access_model.FieldAccess(
+      fieldName: fieldName,
+      declaringType: declaringType,
+      accessType: field_access_model.FieldAccessType.write,
+      filePath: filePath,
+      lineNumber: location.lineNumber,
+      columnNumber: location.columnNumber - 1,
+      accessPattern: field_access_model.FieldAccessPattern.constructorParam,
+      isImplicitThis: false,
+      inConstructor: true,
+      inEqualityOperator: false,
+      inStringInterpolation: _stringInterpolationOffsets.contains(node.offset),
+    );
+
+    accesses.add(access);
+    super.visitFieldFormalParameter(node);
+  }
+
+  @override
+  void visitConstructorFieldInitializer(ConstructorFieldInitializer node) {
+    // T020: Track field = value in initializer lists
+    final fieldElement = node.fieldName.element;
+    if (fieldElement is! FieldElement) {
+      super.visitConstructorFieldInitializer(node);
+      return;
+    }
+
+    final location = lineInfo.getLocation(node.offset);
+
+    final access = field_access_model.FieldAccess(
+      fieldName: node.fieldName.name,
+      declaringType: fieldElement.enclosingElement.name ?? '<unknown>',
+      accessType: field_access_model.FieldAccessType.write,
+      filePath: filePath,
+      lineNumber: location.lineNumber,
+      columnNumber: location.columnNumber - 1,
+      accessPattern: field_access_model.FieldAccessPattern.constructorInit,
+      isImplicitThis: false,
+      inConstructor: true,
+      inEqualityOperator: false,
+      inStringInterpolation: _stringInterpolationOffsets.contains(node.offset),
+    );
+
+    accesses.add(access);
+    super.visitConstructorFieldInitializer(node);
+  }
+
+  @override
+  void visitAssignmentExpression(AssignmentExpression node) {
+    // T021: Handle assignment expressions to fields
+    // Compound assignments (+=, -=, etc.) are both read and write
+    // The logic is already handled by:
+    // 1. _isWriteContext() detects assignment (write)
+    // 2. visitSimpleIdentifier and visitPropertyAccess use _recordFieldAccess
+    // 3. Compound assignments are detected via operator type and marked readWrite
+
+    // Note: Compound assignment like field += 1 requires reading field first,
+    // then writing the result. This is automatically handled by the AST visitor
+    // pattern since the identifier will be visited with both read/write context.
+
+    super.visitAssignmentExpression(node);
+  }
+
+  @override
+  void visitPropertyAccess(PropertyAccess node) {
+    // T018: Distinguish between this.field and obj.field
+    // T058: Handle cascade expressions (..field)
+
+    final target = node.target;
+
+    // T058: Handle cascade operator (..) - target is null for cascade sections
+    if (target == null && node.operator.lexeme == '..') {
+      // This is a cascade expression like obj..field
+      // Find the cascade expression to get the target type
+      AstNode? current = node;
+      while (current != null && current is! CascadeExpression) {
+        current = current.parent;
+      }
+
+      if (current is CascadeExpression) {
+        final cascadeTarget = current.target;
+        String? declaringType;
+
+        // Determine the type of the cascade target
+        if (cascadeTarget is InstanceCreationExpression) {
+          // Pattern: Config()..field
+          declaringType = cascadeTarget.constructorName.type.name2.lexeme;
+        } else if (cascadeTarget is SimpleIdentifier) {
+          // Pattern: obj..field
+          final element = cascadeTarget.element;
+          if (element is VariableElement) {
+            final staticType = element.type;
+            declaringType = staticType.toString().replaceAll(RegExp(r'[<>*?].*'), '').trim();
+          }
+        } else if (cascadeTarget is ThisExpression) {
+          // Pattern: this..field
+          declaringType = _getEnclosingClassName(node);
+        } else if (cascadeTarget is PropertyAccess || cascadeTarget is MethodInvocation) {
+          // Pattern: getObject()..field or obj.property..field
+          final staticType = cascadeTarget.staticType;
+          if (staticType != null) {
+            declaringType = staticType.toString().replaceAll(RegExp(r'[<>*?].*'), '').trim();
+          }
+        }
+
+        if (declaringType != null) {
+          final propertyName = node.propertyName.name;
+          final isWrite = _isWriteContext(node);
+          final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+          if (isRead || isWrite) {
+            // Get the actual declaring class of the property (for inherited fields)
+            String finalDeclaringType = declaringType;
+            final propertyElement = node.propertyName.element;
+
+            if (propertyElement is PropertyAccessorElement &&
+                propertyElement.variable.enclosingElement is InterfaceElement) {
+              final enclosingName = (propertyElement.variable.enclosingElement as InterfaceElement).name;
+              finalDeclaringType = enclosingName ?? declaringType;
+            } else if (propertyElement is FieldElement && propertyElement.enclosingElement is InterfaceElement) {
+              final enclosingName = (propertyElement.enclosingElement as InterfaceElement).name;
+              finalDeclaringType = enclosingName ?? declaringType;
+            }
+
+            final location = lineInfo.getLocation(node.propertyName.offset);
+            final accessType = isRead && isWrite
+                ? field_access_model.FieldAccessType.readWrite
+                : isRead
+                    ? field_access_model.FieldAccessType.read
+                    : field_access_model.FieldAccessType.write;
+
+            final access = field_access_model.FieldAccess(
+              fieldName: propertyName,
+              declaringType: finalDeclaringType,
+              accessType: accessType,
+              filePath: filePath,
+              lineNumber: location.lineNumber,
+              columnNumber: location.columnNumber - 1,
+              accessPattern: field_access_model.FieldAccessPattern.directRead,
+              isImplicitThis: false,
+              inConstructor: _isInConstructor(),
+              inEqualityOperator: _isInEqualityOperator(node.propertyName),
+              inStringInterpolation: _stringInterpolationOffsets.contains(node.propertyName.offset),
+            );
+
+            accesses.add(access);
+          }
+        }
+      }
+
+      super.visitPropertyAccess(node);
+      return;
+    }
+
+    // Only track explicit this.field and obj.field where obj's type can be determined
+    if (target is ThisExpression) {
+      // Explicit this.field - get class name from context
+      final declaringType = _getEnclosingClassName(node);
+      if (declaringType == null) {
+        super.visitPropertyAccess(node);
+        return;
+      }
+
+      final propertyName = node.propertyName.name;
+      final isWrite = _isWriteContext(node);
+      final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+      if (isRead || isWrite) {
+        final location = lineInfo.getLocation(node.propertyName.offset);
+        final accessType = isRead && isWrite
+            ? field_access_model.FieldAccessType.readWrite
+            : isRead
+                ? field_access_model.FieldAccessType.read
+                : field_access_model.FieldAccessType.write;
+
+        final access = field_access_model.FieldAccess(
+          fieldName: propertyName,
+          declaringType: declaringType,
+          accessType: accessType,
+          filePath: filePath,
+          lineNumber: location.lineNumber,
+          columnNumber: location.columnNumber - 1,
+          accessPattern: field_access_model.FieldAccessPattern.thisExplicit,
+          isImplicitThis: false,
+          inConstructor: _isInConstructor(),
+          inEqualityOperator: _isInEqualityOperator(node.propertyName),
+          inStringInterpolation: _stringInterpolationOffsets.contains(node.propertyName.offset),
+        );
+
+        accesses.add(access);
+      }
+    } else if (target is SimpleIdentifier) {
+      // obj.field - try to infer the type from the variable
+      // Use element's type if available
+      final targetElement = target.element;
+
+      if (targetElement != null) {
+        // T101: If target is a field (e.g., searchTextController.text),
+        // track the target field itself as used
+        if (targetElement is FieldElement || (targetElement is PropertyAccessorElement && targetElement.isSynthetic)) {
+          Element? enclosing;
+
+          if (targetElement is FieldElement) {
+            enclosing = targetElement.enclosingElement;
+          } else if (targetElement is PropertyAccessorElement) {
+            enclosing = targetElement.variable.enclosingElement;
+          }
+
+          if (enclosing is InterfaceElement) {
+            final targetFieldName = target.name;
+            final declaringClassName = enclosing.name;
+
+            if (declaringClassName != null) {
+              // Track target field access
+              final targetLocation = lineInfo.getLocation(target.offset);
+              final targetAccess = field_access_model.FieldAccess(
+                fieldName: targetFieldName,
+                declaringType: declaringClassName,
+                accessType: field_access_model.FieldAccessType.read,
+                filePath: filePath,
+                lineNumber: targetLocation.lineNumber,
+                columnNumber: targetLocation.columnNumber - 1,
+                accessPattern: field_access_model.FieldAccessPattern.thisImplicit,
+                isImplicitThis: true,
+                inConstructor: _isInConstructor(),
+                inEqualityOperator: false,
+                inStringInterpolation: _stringInterpolationOffsets.contains(target.offset),
+              );
+
+              accesses.add(targetAccess);
+            }
+          }
+        }
+
+        // Support both VariableElement (local vars, params) and PropertyAccessorElement (getters)
+        final staticType = targetElement is VariableElement
+            ? targetElement.type
+            : targetElement is PropertyAccessorElement
+                ? targetElement.returnType
+                : null;
+
+        if (staticType != null) {
+          final propertyName = node.propertyName.name;
+          final isWrite = _isWriteContext(node);
+          final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+          if (isRead || isWrite) {
+            // Get the actual declaring class of the property, not the static type of the target
+            // Example: qualificationState.data.lastUpdateDateTime where data is Qualification type
+            // but lastUpdateDateTime is declared in ProfileEntity (parent class)
+            String declaringType;
+            final propertyElement = node.propertyName.element;
+
+            if (propertyElement is PropertyAccessorElement &&
+                propertyElement.variable.enclosingElement is InterfaceElement) {
+              // Use the actual declaring class from the field's enclosing element
+              final enclosingName = (propertyElement.variable.enclosingElement as InterfaceElement).name;
+              declaringType = enclosingName ?? '<unknown>';
+            } else if (propertyElement is FieldElement && propertyElement.enclosingElement is InterfaceElement) {
+              final enclosingName = (propertyElement.enclosingElement as InterfaceElement).name;
+              declaringType = enclosingName ?? '<unknown>';
+            } else {
+              // Fallback: use the static type of the target
+              final typeName = staticType.toString();
+              declaringType = typeName.replaceAll(RegExp(r'[<>*?].*'), '').trim();
+            }
+
+            final location = lineInfo.getLocation(node.propertyName.offset);
+            final accessType = isRead && isWrite
+                ? field_access_model.FieldAccessType.readWrite
+                : isRead
+                    ? field_access_model.FieldAccessType.read
+                    : field_access_model.FieldAccessType.write;
+
+            final access = field_access_model.FieldAccess(
+              fieldName: propertyName,
+              declaringType: declaringType,
+              accessType: accessType,
+              filePath: filePath,
+              lineNumber: location.lineNumber,
+              columnNumber: location.columnNumber - 1,
+              accessPattern: field_access_model.FieldAccessPattern.directRead,
+              isImplicitThis: false,
+              inConstructor: _isInConstructor(),
+              inEqualityOperator: _isInEqualityOperator(node.propertyName),
+              inStringInterpolation: _stringInterpolationOffsets.contains(node.propertyName.offset),
+            );
+
+            accesses.add(access);
+          }
+        }
+      }
+    }
+    // Handle parenthesized expressions (e.g., (expr as Type).field or (obj).field)
+    else if (target is ParenthesizedExpression) {
+      // Unwrap the parenthesized expression and use its static type
+      final innerExpression = target.expression;
+      final targetStaticType = innerExpression.staticType;
+
+      if (targetStaticType != null) {
+        final propertyName = node.propertyName.name;
+        final isWrite = _isWriteContext(node);
+        final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+        if (isRead || isWrite) {
+          // Get the actual declaring class of the property
+          String declaringType;
+          final propertyElement = node.propertyName.element;
+
+          if (propertyElement is PropertyAccessorElement &&
+              propertyElement.variable.enclosingElement is InterfaceElement) {
+            final enclosingName = (propertyElement.variable.enclosingElement as InterfaceElement).name;
+            declaringType = enclosingName ?? '<unknown>';
+          } else if (propertyElement is FieldElement && propertyElement.enclosingElement is InterfaceElement) {
+            final enclosingName = (propertyElement.enclosingElement as InterfaceElement).name;
+            declaringType = enclosingName ?? '<unknown>';
+          } else {
+            // Fallback: use the static type
+            final typeName = targetStaticType.toString();
+            declaringType = typeName.replaceAll(RegExp(r'[<>*?].*'), '').trim();
+          }
+
+          final location = lineInfo.getLocation(node.propertyName.offset);
+          final accessType = isRead && isWrite
+              ? field_access_model.FieldAccessType.readWrite
+              : isRead
+                  ? field_access_model.FieldAccessType.read
+                  : field_access_model.FieldAccessType.write;
+
+          final access = field_access_model.FieldAccess(
+            fieldName: propertyName,
+            declaringType: declaringType,
+            accessType: accessType,
+            filePath: filePath,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber - 1,
+            accessPattern: field_access_model.FieldAccessPattern.directRead,
+            isImplicitThis: false,
+            inConstructor: _isInConstructor(),
+            inEqualityOperator: _isInEqualityOperator(node.propertyName),
+            inStringInterpolation: _stringInterpolationOffsets.contains(node.propertyName.offset),
+          );
+
+          accesses.add(access);
+        }
+      }
+    }
+    // Handle instance creation chain (e.g., ClassName.factory(data).field or ClassName().field)
+    else if (target is InstanceCreationExpression) {
+      // Get the type being instantiated
+      final targetStaticType = target.staticType;
+
+      if (targetStaticType != null) {
+        final propertyName = node.propertyName.name;
+        final isWrite = _isWriteContext(node);
+        final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+        if (isRead || isWrite) {
+          // Get the actual declaring class of the property
+          String declaringType;
+          final propertyElement = node.propertyName.element;
+
+          if (propertyElement is PropertyAccessorElement &&
+              propertyElement.variable.enclosingElement is InterfaceElement) {
+            final enclosingName = (propertyElement.variable.enclosingElement as InterfaceElement).name;
+            declaringType = enclosingName ?? '<unknown>';
+          } else if (propertyElement is FieldElement && propertyElement.enclosingElement is InterfaceElement) {
+            final enclosingName = (propertyElement.enclosingElement as InterfaceElement).name;
+            declaringType = enclosingName ?? '<unknown>';
+          } else {
+            // Fallback: use the static type
+            final typeName = targetStaticType.toString();
+            declaringType = typeName.replaceAll(RegExp(r'[<>*?].*'), '').trim();
+          }
+
+          final location = lineInfo.getLocation(node.propertyName.offset);
+          final accessType = isRead && isWrite
+              ? field_access_model.FieldAccessType.readWrite
+              : isRead
+                  ? field_access_model.FieldAccessType.read
+                  : field_access_model.FieldAccessType.write;
+
+          final access = field_access_model.FieldAccess(
+            fieldName: propertyName,
+            declaringType: declaringType,
+            accessType: accessType,
+            filePath: filePath,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber - 1,
+            accessPattern: field_access_model.FieldAccessPattern.directRead,
+            isImplicitThis: false,
+            inConstructor: _isInConstructor(),
+            inEqualityOperator: _isInEqualityOperator(node.propertyName),
+            inStringInterpolation: _stringInterpolationOffsets.contains(node.propertyName.offset),
+          );
+
+          accesses.add(access);
+        }
+      }
+    }
+    // Handle property access with PrefixedIdentifier target (e.g., container.qualification.lastUpdateDateTime)
+    else if (target is PrefixedIdentifier) {
+      // Get the static type of the prefix identifier
+      final targetStaticType = target.staticType;
+
+      // For nullable access (?.),staticType might be null, but we can still track the access
+      final propertyName = node.propertyName.name;
+      final isWrite = _isWriteContext(node);
+      final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+      if (isRead || isWrite) {
+        // Get the actual declaring class of the property (for inherited fields)
+        String? declaringType;
+        final propertyElement = node.propertyName.element;
+
+        if (propertyElement != null &&
+            propertyElement is PropertyAccessorElement &&
+            propertyElement.variable.enclosingElement is InterfaceElement) {
+          final enclosingName = (propertyElement.variable.enclosingElement as InterfaceElement).name;
+          declaringType = enclosingName ?? '<unknown>';
+        } else if (propertyElement != null &&
+            propertyElement is FieldElement &&
+            propertyElement.enclosingElement is InterfaceElement) {
+          final enclosingName = (propertyElement.enclosingElement as InterfaceElement).name;
+          declaringType = enclosingName ?? '<unknown>';
+        } else if (targetStaticType != null) {
+          // Fallback: use the static type (if available)
+          // Remove nullable marker and generics
+          final typeName = targetStaticType.toString().replaceAll('?', '');
+          declaringType = typeName.replaceAll(RegExp(r'[<>*].*'), '').trim();
+        } else if (node.isNullAware && target.identifier.element != null) {
+          // For nullable access, try to get type from the target identifier
+          final identifierElement = target.identifier.element;
+          if (identifierElement is VariableElement) {
+            final identifierType = identifierElement.type;
+            // Remove nullable marker (?) from type
+            final typeName = identifierType.toString().replaceAll('?', '');
+            declaringType = typeName.replaceAll(RegExp(r'[<>*].*'), '').trim();
+          }
+        }
+
+        if (declaringType != null) {
+          final location = lineInfo.getLocation(node.propertyName.offset);
+          final accessType = isRead && isWrite
+              ? field_access_model.FieldAccessType.readWrite
+              : isRead
+                  ? field_access_model.FieldAccessType.read
+                  : field_access_model.FieldAccessType.write;
+
+          final access = field_access_model.FieldAccess(
+            fieldName: propertyName,
+            declaringType: declaringType,
+            accessType: accessType,
+            filePath: filePath,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber - 1,
+            accessPattern: field_access_model.FieldAccessPattern.directRead,
+            isImplicitThis: false,
+            inConstructor: _isInConstructor(),
+            inEqualityOperator: _isInEqualityOperator(node.propertyName),
+            inStringInterpolation: _stringInterpolationOffsets.contains(node.propertyName.offset),
+          );
+
+          accesses.add(access);
+        } else if (propertyName == 'flightTypeOptions') {
+          print('[DEBUG] declaringType is NULL for flightTypeOptions - NOT TRACKED!');
+        }
+      }
+    }
+    // Handle property access chain (e.g., getObject().property.field)
+    else if (target is PropertyAccess) {
+      // Get the static type of the intermediate property
+      final targetStaticType = target.staticType;
+
+      // For nullable access (?.), staticType might be null, but we can still track the access
+      final propertyName = node.propertyName.name;
+      final isWrite = _isWriteContext(node);
+      final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+      if (isRead || isWrite) {
+        // Get the actual declaring class of the property (for inherited fields)
+        String? declaringType;
+        final propertyElement = node.propertyName.element;
+
+        if (propertyElement != null &&
+            propertyElement is PropertyAccessorElement &&
+            propertyElement.variable.enclosingElement is InterfaceElement) {
+          final enclosingName = (propertyElement.variable.enclosingElement as InterfaceElement).name;
+          declaringType = enclosingName ?? '<unknown>';
+        } else if (propertyElement != null &&
+            propertyElement is FieldElement &&
+            propertyElement.enclosingElement is InterfaceElement) {
+          final enclosingName = (propertyElement.enclosingElement as InterfaceElement).name;
+          declaringType = enclosingName ?? '<unknown>';
+        } else if (targetStaticType != null) {
+          // Fallback: use the static type (if available)
+          final typeName = targetStaticType.toString();
+          declaringType = typeName.replaceAll(RegExp(r'[<>*?].*'), '').trim();
+        } else if (node.isNullAware && target.propertyName.element != null) {
+          // For nullable access, try to get type from the target property
+          final targetPropertyElement = target.propertyName.element;
+          if (targetPropertyElement is PropertyAccessorElement) {
+            final targetType = targetPropertyElement.returnType;
+            // Remove nullable marker (?) from type
+            final typeName = targetType.toString().replaceAll('?', '');
+            declaringType = typeName.replaceAll(RegExp(r'[<>*].*'), '').trim();
+          }
+        }
+
+        if (declaringType != null) {
+          final location = lineInfo.getLocation(node.propertyName.offset);
+          final accessType = isRead && isWrite
+              ? field_access_model.FieldAccessType.readWrite
+              : isRead
+                  ? field_access_model.FieldAccessType.read
+                  : field_access_model.FieldAccessType.write;
+
+          final access = field_access_model.FieldAccess(
+            fieldName: propertyName,
+            declaringType: declaringType,
+            accessType: accessType,
+            filePath: filePath,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber - 1,
+            accessPattern: field_access_model.FieldAccessPattern.directRead,
+            isImplicitThis: false,
+            inConstructor: _isInConstructor(),
+            inEqualityOperator: _isInEqualityOperator(node.propertyName),
+            inStringInterpolation: _stringInterpolationOffsets.contains(node.propertyName.offset),
+          );
+
+          accesses.add(access);
+        }
+      }
+    }
+    // Handle method invocation chain (e.g., obj.method().field)
+    else if (target is MethodInvocation) {
+      // Handle method invocation chains: methodCall().field or sl<Type>().field
+      // Get the return type of the method
+      final targetStaticType = target.staticType;
+
+      final propertyName = node.propertyName.name;
+      final isWrite = _isWriteContext(node);
+      final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+      if (isRead || isWrite) {
+        // Get the actual declaring class of the property (for inherited fields)
+        String? declaringType;
+        final propertyElement = node.propertyName.element;
+
+        if (propertyElement is PropertyAccessorElement &&
+            propertyElement.variable.enclosingElement is InterfaceElement) {
+          final enclosingName = (propertyElement.variable.enclosingElement as InterfaceElement).name;
+          declaringType = enclosingName;
+        } else if (propertyElement is FieldElement && propertyElement.enclosingElement is InterfaceElement) {
+          final enclosingName = (propertyElement.enclosingElement as InterfaceElement).name;
+          declaringType = enclosingName;
+        } else if (targetStaticType != null) {
+          // Fallback: use the return type
+          final typeName = targetStaticType.toString();
+          declaringType = typeName.replaceAll(RegExp(r'[<>*?].*'), '').trim();
+        }
+
+        if (declaringType != null) {
+          final location = lineInfo.getLocation(node.propertyName.offset);
+          final accessType = isRead && isWrite
+              ? field_access_model.FieldAccessType.readWrite
+              : isRead
+                  ? field_access_model.FieldAccessType.read
+                  : field_access_model.FieldAccessType.write;
+
+          final access = field_access_model.FieldAccess(
+            fieldName: propertyName,
+            declaringType: declaringType,
+            accessType: accessType,
+            filePath: filePath,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber - 1,
+            accessPattern: field_access_model.FieldAccessPattern.directRead,
+            isImplicitThis: false,
+            inConstructor: _isInConstructor(),
+            inEqualityOperator: _isInEqualityOperator(node.propertyName),
+            inStringInterpolation: _stringInterpolationOffsets.contains(node.propertyName.offset),
+          );
+
+          accesses.add(access);
+        }
+      }
+    }
+    // Handle FunctionExpressionInvocation chains: function().field or call<Type>().field
+    else if (target is FunctionExpressionInvocation) {
+      final targetStaticType = target.staticType;
+
+      final propertyName = node.propertyName.name;
+      final isWrite = _isWriteContext(node);
+      final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+      if (isRead || isWrite) {
+        // Get the actual declaring class of the property (for inherited fields)
+        String? declaringType;
+        final propertyElement = node.propertyName.element;
+
+        if (propertyElement is PropertyAccessorElement &&
+            propertyElement.variable.enclosingElement is InterfaceElement) {
+          final enclosingName = (propertyElement.variable.enclosingElement as InterfaceElement).name;
+          declaringType = enclosingName;
+        } else if (propertyElement is FieldElement && propertyElement.enclosingElement is InterfaceElement) {
+          final enclosingName = (propertyElement.enclosingElement as InterfaceElement).name;
+          declaringType = enclosingName;
+        } else if (targetStaticType != null) {
+          // Fallback: use the return type
+          final typeName = targetStaticType.toString();
+          declaringType = typeName.replaceAll(RegExp(r'[<>*?].*'), '').trim();
+        }
+
+        if (declaringType != null) {
+          final location = lineInfo.getLocation(node.propertyName.offset);
+          final accessType = isRead && isWrite
+              ? field_access_model.FieldAccessType.readWrite
+              : isRead
+                  ? field_access_model.FieldAccessType.read
+                  : field_access_model.FieldAccessType.write;
+
+          final access = field_access_model.FieldAccess(
+            fieldName: propertyName,
+            declaringType: declaringType,
+            accessType: accessType,
+            filePath: filePath,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber - 1,
+            accessPattern: field_access_model.FieldAccessPattern.directRead,
+            isImplicitThis: false,
+            inConstructor: _isInConstructor(),
+            inEqualityOperator: _isInEqualityOperator(node.propertyName),
+            inStringInterpolation: _stringInterpolationOffsets.contains(node.propertyName.offset),
+          );
+
+          accesses.add(access);
+        }
+      }
+    }
+    // Handle postfix expression (e.g., quickInfo!.currencyUrl where quickInfo! is the target)
+    else if (target is PostfixExpression) {
+      // Get the operand of the postfix (e.g., quickInfo in quickInfo!)
+      final operand = target.operand;
+
+      // Track the operand field if it's a field access
+      if (operand is SimpleIdentifier) {
+        final operandElement = operand.element;
+
+        if (operandElement is FieldElement ||
+            (operandElement is PropertyAccessorElement && operandElement.isSynthetic)) {
+          Element? enclosing;
+
+          if (operandElement is FieldElement) {
+            enclosing = operandElement.enclosingElement;
+          } else if (operandElement is PropertyAccessorElement) {
+            enclosing = operandElement.variable.enclosingElement;
+          }
+
+          if (enclosing is InterfaceElement) {
+            final operandFieldName = operand.name;
+            final declaringClassName = enclosing.name;
+
+            if (declaringClassName != null) {
+              // Track operand field access (e.g., quickInfo in quickInfo!.currencyUrl)
+              final operandLocation = lineInfo.getLocation(operand.offset);
+              final operandAccess = field_access_model.FieldAccess(
+                fieldName: operandFieldName,
+                declaringType: declaringClassName,
+                accessType: field_access_model.FieldAccessType.read,
+                filePath: filePath,
+                lineNumber: operandLocation.lineNumber,
+                columnNumber: operandLocation.columnNumber - 1,
+                accessPattern: field_access_model.FieldAccessPattern.thisImplicit,
+                isImplicitThis: true,
+                inConstructor: _isInConstructor(),
+                inEqualityOperator: false,
+                inStringInterpolation: _stringInterpolationOffsets.contains(operand.offset),
+              );
+
+              accesses.add(operandAccess);
+            }
+          }
+        }
+      }
+
+      // Now track the property access on the postfix result (e.g., currencyUrl in quickInfo!.currencyUrl)
+      final targetStaticType = target.staticType;
+
+      if (targetStaticType != null) {
+        final propertyName = node.propertyName.name;
+        final isWrite = _isWriteContext(node);
+        final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+        if (isRead || isWrite) {
+          // Get the actual declaring class of the property (for inherited fields)
+          String declaringType;
+          final propertyElement = node.propertyName.element;
+
+          if (propertyElement != null &&
+              propertyElement is PropertyAccessorElement &&
+              propertyElement.variable.enclosingElement is InterfaceElement) {
+            final enclosingName = (propertyElement.variable.enclosingElement as InterfaceElement).name;
+            declaringType = enclosingName ?? '<unknown>';
+          } else if (propertyElement != null &&
+              propertyElement is FieldElement &&
+              propertyElement.enclosingElement is InterfaceElement) {
+            final enclosingName = (propertyElement.enclosingElement as InterfaceElement).name;
+            declaringType = enclosingName ?? '<unknown>';
+          } else {
+            // Fallback: use the static type
+            final typeName = targetStaticType.toString();
+            declaringType = typeName.replaceAll(RegExp(r'[<>*?].*'), '').trim();
+          }
+
+          final location = lineInfo.getLocation(node.propertyName.offset);
+          final accessType = isRead && isWrite
+              ? field_access_model.FieldAccessType.readWrite
+              : isRead
+                  ? field_access_model.FieldAccessType.read
+                  : field_access_model.FieldAccessType.write;
+
+          final access = field_access_model.FieldAccess(
+            fieldName: propertyName,
+            declaringType: declaringType,
+            accessType: accessType,
+            filePath: filePath,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber - 1,
+            accessPattern: field_access_model.FieldAccessPattern.directRead,
+            isImplicitThis: false,
+            inConstructor: _isInConstructor(),
+            inEqualityOperator: _isInEqualityOperator(node.propertyName),
+            inStringInterpolation: _stringInterpolationOffsets.contains(node.propertyName.offset),
+          );
+
+          accesses.add(access);
+        }
+      }
+    }
+    // Handle index expression (e.g., list[0].field or map['key'].field)
+    else if (target is IndexExpression) {
+      // Get the static type of the indexed result
+      final targetStaticType = target.staticType;
+
+      if (targetStaticType != null) {
+        final propertyName = node.propertyName.name;
+        final isWrite = _isWriteContext(node);
+        final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+        if (isRead || isWrite) {
+          // Get the actual declaring class of the property (for inherited fields)
+          String declaringType;
+          final propertyElement = node.propertyName.element;
+
+          if (propertyElement != null &&
+              propertyElement is PropertyAccessorElement &&
+              propertyElement.variable.enclosingElement is InterfaceElement) {
+            final enclosingName = (propertyElement.variable.enclosingElement as InterfaceElement).name;
+            declaringType = enclosingName ?? '<unknown>';
+          } else if (propertyElement != null &&
+              propertyElement is FieldElement &&
+              propertyElement.enclosingElement is InterfaceElement) {
+            final enclosingName = (propertyElement.enclosingElement as InterfaceElement).name;
+            declaringType = enclosingName ?? '<unknown>';
+          } else {
+            // Fallback: use the static type
+            final typeName = targetStaticType.toString();
+            declaringType = typeName.replaceAll(RegExp(r'[<>*?].*'), '').trim();
+          }
+
+          final location = lineInfo.getLocation(node.propertyName.offset);
+          final accessType = isRead && isWrite
+              ? field_access_model.FieldAccessType.readWrite
+              : isRead
+                  ? field_access_model.FieldAccessType.read
+                  : field_access_model.FieldAccessType.write;
+
+          final access = field_access_model.FieldAccess(
+            fieldName: propertyName,
+            declaringType: declaringType,
+            accessType: accessType,
+            filePath: filePath,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber - 1,
+            accessPattern: field_access_model.FieldAccessPattern.directRead,
+            isImplicitThis: false,
+            inConstructor: _isInConstructor(),
+            inEqualityOperator: _isInEqualityOperator(node.propertyName),
+            inStringInterpolation: _stringInterpolationOffsets.contains(node.propertyName.offset),
+          );
+
+          accesses.add(access);
+        }
+      }
+    }
+    // Handle chained property/prefixed access (e.g., obj.property.field or obj.field1.field2)
+    else if (target is PropertyAccess || target is PrefixedIdentifier) {
+      // T101: If target is PrefixedIdentifier and prefix is a field (e.g., searchTextController.text),
+      // track the prefix field as used
+      if (target is PrefixedIdentifier) {
+        final prefix = target.prefix;
+        final prefixElement = prefix.element;
+
+        // Handle both FieldElement and PropertyAccessorElement (synthetic getters for fields)
+        if (prefixElement is FieldElement || (prefixElement is PropertyAccessorElement && prefixElement.isSynthetic)) {
+          Element? enclosingElement;
+
+          if (prefixElement is FieldElement) {
+            enclosingElement = prefixElement.enclosingElement;
+          } else if (prefixElement is PropertyAccessorElement) {
+            // For synthetic getter, get the variable's enclosing element
+            enclosingElement = prefixElement.variable.enclosingElement;
+          }
+
+          if (enclosingElement is InterfaceElement) {
+            final prefixFieldName = prefix.name;
+            final declaringClassName = enclosingElement.name;
+
+            if (declaringClassName != null) {
+              // Track prefix field access
+              final prefixLocation = lineInfo.getLocation(prefix.offset);
+              final prefixAccess = field_access_model.FieldAccess(
+                fieldName: prefixFieldName,
+                declaringType: declaringClassName,
+                accessType: field_access_model.FieldAccessType.read,
+                filePath: filePath,
+                lineNumber: prefixLocation.lineNumber,
+                columnNumber: prefixLocation.columnNumber - 1,
+                accessPattern: field_access_model.FieldAccessPattern.thisImplicit,
+                isImplicitThis: true,
+                inConstructor: _isInConstructor(),
+                inEqualityOperator: false,
+                inStringInterpolation: _stringInterpolationOffsets.contains(prefix.offset),
+              );
+
+              accesses.add(prefixAccess);
+            }
+          }
+        }
+      }
+
+      // For chained access like transportState.transport.type,
+      // target can be either PropertyAccess or PrefixedIdentifier
+      // We need to get the type from the intermediate node
+      final targetStaticType = target?.staticType;
+
+      if (targetStaticType != null) {
+        // Extract class name from type
+        final typeName = targetStaticType.toString();
+        // Remove type parameters and nullability markers
+        final cleanTypeName = typeName.replaceAll(RegExp(r'[<>*?].*'), '').trim();
+
+        final propertyName = node.propertyName.name;
+        final isWrite = _isWriteContext(node);
+        final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+        if (isRead || isWrite) {
+          final location = lineInfo.getLocation(node.propertyName.offset);
+          final accessType = isRead && isWrite
+              ? field_access_model.FieldAccessType.readWrite
+              : isRead
+                  ? field_access_model.FieldAccessType.read
+                  : field_access_model.FieldAccessType.write;
+
+          final access = field_access_model.FieldAccess(
+            fieldName: propertyName,
+            declaringType: cleanTypeName,
+            accessType: accessType,
+            filePath: filePath,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber - 1,
+            accessPattern: field_access_model.FieldAccessPattern.directRead,
+            isImplicitThis: false,
+            inConstructor: _isInConstructor(),
+            inEqualityOperator: _isInEqualityOperator(node.propertyName),
+            inStringInterpolation: _stringInterpolationOffsets.contains(node.propertyName.offset),
+          );
+
+          accesses.add(access);
+        }
+      }
+    }
+
+    super.visitPropertyAccess(node);
+  }
+
+  @override
+  void visitPrefixedIdentifier(PrefixedIdentifier node) {
+    // T018 & T030: Handle obj.field (instance) and ClassName.field (static) patterns
+    // PrefixedIdentifier is used for simple cases like: instance.field, MyClass.staticField
+    // PropertyAccess is used for complex cases like: getObject().field
+
+    final prefix = node.prefix;
+    final identifier = node.identifier;
+
+    // Try to get the type from the prefix element
+    final prefixElement = prefix.element;
+
+    // T030: Handle static field access (ClassName.field)
+    if (prefixElement is InterfaceElement) {
+      // Static field access: prefix is a class/enum name
+      final className = prefixElement.name;
+      if (className == null) {
+        super.visitPrefixedIdentifier(node);
+        return;
+      }
+
+      final fieldName = identifier.name;
+
+      // Check if identifier is a field element
+      final identifierElement = identifier.element;
+      if (identifierElement is FieldElement || identifierElement is PropertyAccessorElement) {
+        final isWrite = _isWriteContext(node);
+        final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+        if (isRead || isWrite) {
+          final location = lineInfo.getLocation(identifier.offset);
+          final accessType = isRead && isWrite
+              ? field_access_model.FieldAccessType.readWrite
+              : isRead
+                  ? field_access_model.FieldAccessType.read
+                  : field_access_model.FieldAccessType.write;
+
+          final access = field_access_model.FieldAccess(
+            fieldName: fieldName,
+            declaringType: className,
+            accessType: accessType,
+            filePath: filePath,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber - 1,
+            accessPattern: field_access_model.FieldAccessPattern.staticAccess,
+            isImplicitThis: false,
+            inConstructor: _isInConstructor(),
+            inEqualityOperator: _isInEqualityOperator(identifier),
+            inStringInterpolation: _stringInterpolationOffsets.contains(identifier.offset),
+          );
+
+          accesses.add(access);
+        }
+      }
+    }
+    // T018: Handle instance field access (obj.field)
+    else if (prefixElement is VariableElement ||
+        (prefixElement is PropertyAccessorElement && prefixElement.isSynthetic)) {
+      // T101: If prefix is a field being accessed (e.g., obj.field.property in PrefixedIdentifier),
+      // track the prefix field itself as used (explicit access like `obj.field`)
+      if (prefixElement is FieldElement || (prefixElement is PropertyAccessorElement && prefixElement.isSynthetic)) {
+        // Get declaring class/mixin/enum
+        Element? enclosing;
+
+        if (prefixElement is FieldElement) {
+          enclosing = prefixElement.enclosingElement;
+        } else if (prefixElement is PropertyAccessorElement) {
+          enclosing = prefixElement.variable.enclosingElement;
+        }
+
+        if (enclosing is InterfaceElement) {
+          final prefixFieldName = prefix.name;
+          final declaringClassName = enclosing.name;
+
+          if (declaringClassName != null) {
+            // Track prefix field access (it's being read to access its property)
+            final prefixLocation = lineInfo.getLocation(prefix.offset);
+            final prefixAccess = field_access_model.FieldAccess(
+              fieldName: prefixFieldName,
+              declaringType: declaringClassName,
+              accessType: field_access_model.FieldAccessType.read,
+              filePath: filePath,
+              lineNumber: prefixLocation.lineNumber,
+              columnNumber: prefixLocation.columnNumber - 1,
+              accessPattern: field_access_model.FieldAccessPattern.directRead,
+              isImplicitThis: false,
+              inConstructor: _isInConstructor(),
+              inEqualityOperator: false,
+              inStringInterpolation: _stringInterpolationOffsets.contains(prefix.offset),
+            );
+
+            accesses.add(prefixAccess);
+          }
+        }
+      }
+
+      // Use prefix.staticType instead of prefixElement.type to support type promotion
+      // Example: In pattern matching, `state` may be promoted from `State` to `LoadedState`
+      DartType? staticType = prefix.staticType;
+
+      if (staticType == null) {
+        if (prefixElement is VariableElement) {
+          staticType = prefixElement.type;
+        } else if (prefixElement is PropertyAccessorElement) {
+          staticType = prefixElement.variable.type;
+        }
+      }
+
+      if (staticType == null) {
+        super.visitPrefixedIdentifier(node);
+        return;
+      }
+
+      final propertyName = identifier.name;
+      final isWrite = _isWriteContext(node);
+      final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+      if (isRead || isWrite) {
+        // Get the actual declaring class of the property (for inherited fields)
+        String declaringType;
+        final identifierElement = identifier.element;
+
+        if (identifierElement is PropertyAccessorElement &&
+            identifierElement.variable.enclosingElement is InterfaceElement) {
+          final enclosingName = (identifierElement.variable.enclosingElement as InterfaceElement).name;
+          declaringType = enclosingName ?? '<unknown>';
+        } else if (identifierElement is FieldElement && identifierElement.enclosingElement is InterfaceElement) {
+          final enclosingName = (identifierElement.enclosingElement as InterfaceElement).name;
+          declaringType = enclosingName ?? '<unknown>';
+        } else {
+          // Fallback: use the static type of the prefix
+          final typeName = staticType.toString();
+          declaringType = typeName.replaceAll(RegExp(r'[<>*?].*'), '').trim();
+        }
+
+        final location = lineInfo.getLocation(identifier.offset);
+        final accessType = isRead && isWrite
+            ? field_access_model.FieldAccessType.readWrite
+            : isRead
+                ? field_access_model.FieldAccessType.read
+                : field_access_model.FieldAccessType.write;
+
+        final access = field_access_model.FieldAccess(
+          fieldName: propertyName,
+          declaringType: declaringType,
+          accessType: accessType,
+          filePath: filePath,
+          lineNumber: location.lineNumber,
+          columnNumber: location.columnNumber - 1,
+          accessPattern: field_access_model.FieldAccessPattern.directRead,
+          isImplicitThis: false,
+          inConstructor: _isInConstructor(),
+          inEqualityOperator: _isInEqualityOperator(identifier),
+          inStringInterpolation: _stringInterpolationOffsets.contains(identifier.offset),
+        );
+
+        accesses.add(access);
+      }
+    }
+    // Handle PropertyAccessorElement (e.g., widget.field in StatefulWidget State classes)
+    else if (prefixElement is PropertyAccessorElement) {
+      // Use returnType for getters (like State.widget getter)
+      final staticType = prefixElement.returnType;
+
+      final propertyName = identifier.name;
+      final isWrite = _isWriteContext(node);
+      final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+      if (isRead || isWrite) {
+        // Get the actual declaring class of the property (for inherited fields)
+        String declaringType;
+        final identifierElement = identifier.element;
+
+        if (identifierElement is PropertyAccessorElement &&
+            identifierElement.variable.enclosingElement is InterfaceElement) {
+          final enclosingName = (identifierElement.variable.enclosingElement as InterfaceElement).name;
+          declaringType = enclosingName ?? '<unknown>';
+        } else if (identifierElement is FieldElement && identifierElement.enclosingElement is InterfaceElement) {
+          final enclosingName = (identifierElement.enclosingElement as InterfaceElement).name;
+          declaringType = enclosingName ?? '<unknown>';
+        } else {
+          // Fallback: use the static type
+          final typeName = staticType.toString();
+          declaringType = typeName.replaceAll(RegExp(r'[<>*?].*'), '').trim();
+        }
+
+        final location = lineInfo.getLocation(identifier.offset);
+        final accessType = isRead && isWrite
+            ? field_access_model.FieldAccessType.readWrite
+            : isRead
+                ? field_access_model.FieldAccessType.read
+                : field_access_model.FieldAccessType.write;
+
+        final access = field_access_model.FieldAccess(
+          fieldName: propertyName,
+          declaringType: declaringType,
+          accessType: accessType,
+          filePath: filePath,
+          lineNumber: location.lineNumber,
+          columnNumber: location.columnNumber - 1,
+          accessPattern: field_access_model.FieldAccessPattern.directRead,
+          isImplicitThis: false,
+          inConstructor: _isInConstructor(),
+          inEqualityOperator: _isInEqualityOperator(identifier),
+          inStringInterpolation: _stringInterpolationOffsets.contains(identifier.offset),
+        );
+
+        accesses.add(access);
+      }
+    }
+
+    super.visitPrefixedIdentifier(node);
+  }
+
+  @override
+  void visitPostfixExpression(PostfixExpression node) {
+    // Handle postfix expressions like field! or obj.field! or field++
+    final operand = node.operand;
+
+    // Handle simple identifier postfix (field++, field--, field!)
+    if (operand is SimpleIdentifier) {
+      final element = operand.element;
+      String? declaringType;
+
+      // Check if this is a field access
+      if (element is PropertyAccessorElement && !element.isStatic) {
+        final declaringElement = element.enclosingElement;
+
+        if (declaringElement is ClassElement) {
+          declaringType = declaringElement.name;
+        } else if (declaringElement is MixinElement) {
+          declaringType = declaringElement.name;
+        }
+      }
+      // Fallback: if element is null (semantic resolution failed),
+      // assume it's an implicit this field access in the enclosing class
+      else if (element == null) {
+        declaringType = _getEnclosingClassName(node);
+      }
+
+      if (declaringType != null) {
+        // Postfix ++ and -- are read-write operations
+        final isIncDec = node.operator.lexeme == '++' || node.operator.lexeme == '--';
+        final accessType =
+            isIncDec ? field_access_model.FieldAccessType.readWrite : field_access_model.FieldAccessType.read;
+
+        final location = lineInfo.getLocation(operand.offset);
+        final access = field_access_model.FieldAccess(
+          fieldName: operand.name,
+          declaringType: declaringType,
+          accessType: accessType,
+          filePath: filePath,
+          lineNumber: location.lineNumber,
+          columnNumber: location.columnNumber - 1,
+          accessPattern: field_access_model.FieldAccessPattern.thisImplicit,
+          isImplicitThis: true,
+          inConstructor: _isInConstructor(),
+          inEqualityOperator: false,
+          inStringInterpolation: _stringInterpolationOffsets.contains(operand.offset),
+        );
+
+        accesses.add(access);
+      }
+      // For SimpleIdentifier operands, we've handled field tracking above
+      // Don't call super to avoid double-visiting the identifier
+      return;
+    }
+    // Handle prefixed identifier postfix (obj.field!)
+    else if (operand is PrefixedIdentifier) {
+      // Handle the prefix field access (e.g., section in section.details!)
+      final prefix = operand.prefix;
+      final prefixElement = prefix.element;
+
+      if (prefixElement is FieldElement || (prefixElement is PropertyAccessorElement && prefixElement.isSynthetic)) {
+        Element? enclosingElement;
+
+        if (prefixElement is FieldElement) {
+          enclosingElement = prefixElement.enclosingElement;
+        } else if (prefixElement is PropertyAccessorElement) {
+          enclosingElement = prefixElement.variable.enclosingElement;
+        }
+
+        if (enclosingElement is InterfaceElement) {
+          final fieldName = prefix.name;
+          final declaringClassName = enclosingElement.name;
+
+          if (declaringClassName != null) {
+            final location = lineInfo.getLocation(prefix.offset);
+            final access = field_access_model.FieldAccess(
+              fieldName: fieldName,
+              declaringType: declaringClassName,
+              accessType: field_access_model.FieldAccessType.read,
+              filePath: filePath,
+              lineNumber: location.lineNumber,
+              columnNumber: location.columnNumber - 1,
+              accessPattern: field_access_model.FieldAccessPattern.thisImplicit,
+              isImplicitThis: true,
+              inConstructor: _isInConstructor(),
+              inEqualityOperator: false,
+              inStringInterpolation: _stringInterpolationOffsets.contains(prefix.offset),
+            );
+
+            accesses.add(access);
+          }
+        }
+      }
+    }
+
+    super.visitPostfixExpression(node);
+  }
+
+  @override
+  void visitPrefixExpression(PrefixExpression node) {
+    // Handle prefix expressions like ++field, --field, !field
+    final operand = node.operand;
+
+    // Handle simple identifier prefix (++field, --field)
+    if (operand is SimpleIdentifier) {
+      final element = operand.element;
+      String? declaringType;
+
+      // Check if this is a field access
+      if (element is PropertyAccessorElement && !element.isStatic) {
+        final declaringElement = element.enclosingElement;
+
+        if (declaringElement is ClassElement) {
+          declaringType = declaringElement.name;
+        } else if (declaringElement is MixinElement) {
+          declaringType = declaringElement.name;
+        }
+      }
+      // Fallback: if element is null (semantic resolution failed),
+      // assume it's an implicit this field access in the enclosing class
+      else if (element == null) {
+        declaringType = _getEnclosingClassName(node);
+      }
+
+      if (declaringType != null) {
+        // Prefix ++ and -- are read-write operations
+        final isIncDec = node.operator.lexeme == '++' || node.operator.lexeme == '--';
+        final accessType =
+            isIncDec ? field_access_model.FieldAccessType.readWrite : field_access_model.FieldAccessType.read;
+
+        final location = lineInfo.getLocation(operand.offset);
+        final access = field_access_model.FieldAccess(
+          fieldName: operand.name,
+          declaringType: declaringType,
+          accessType: accessType,
+          filePath: filePath,
+          lineNumber: location.lineNumber,
+          columnNumber: location.columnNumber - 1,
+          accessPattern: field_access_model.FieldAccessPattern.thisImplicit,
+          isImplicitThis: true,
+          inConstructor: _isInConstructor(),
+          inEqualityOperator: false,
+          inStringInterpolation: _stringInterpolationOffsets.contains(operand.offset),
+        );
+
+        accesses.add(access);
+      }
+      // For SimpleIdentifier operands, we've handled field tracking above
+      // Don't call super to avoid double-visiting the identifier
+      return;
+    }
+
+    super.visitPrefixExpression(node);
+  }
+
+  String? _getEnclosingClassName(AstNode node) {
+    AstNode? current = node;
+    while (current != null) {
+      if (current is ClassDeclaration) {
+        return current.name.lexeme;
+      } else if (current is EnumDeclaration) {
+        return current.name.lexeme;
+      } else if (current is ExtensionTypeDeclaration) {
+        return current.name.lexeme;
+      }
+      current = current.parent;
+    }
+    return null;
+  }
+
+  @override
+  void visitSimpleIdentifier(SimpleIdentifier node) {
+    // Skip if this identifier is part of an explicit access (handled by visitPropertyAccess or visitPrefixedIdentifier)
+    final parent = node.parent;
+    if (parent is PropertyAccess || parent is PrefixedIdentifier) {
+      super.visitSimpleIdentifier(node);
+      return;
+    }
+
+    // Handle callable field pattern: field() where field has a call method
+    // Function expression invocation is used when calling a callable object (field with call method)
+    if (parent is FunctionExpressionInvocation) {
+      final element = node.element;
+
+      // Check if this is a field being invoked (callable field)
+      if (element is FieldElement || (element is PropertyAccessorElement && element.isSynthetic)) {
+        Element? enclosingElement;
+
+        if (element is FieldElement) {
+          enclosingElement = element.enclosingElement;
+        } else if (element is PropertyAccessorElement) {
+          enclosingElement = element.variable.enclosingElement;
+        }
+
+        if (enclosingElement is InterfaceElement) {
+          final fieldName = node.name;
+          final declaringClassName = enclosingElement.name;
+
+          if (declaringClassName != null) {
+            final location = lineInfo.getLocation(node.offset);
+            final access = field_access_model.FieldAccess(
+              fieldName: fieldName,
+              declaringType: declaringClassName,
+              accessType: field_access_model.FieldAccessType.read,
+              filePath: filePath,
+              lineNumber: location.lineNumber,
+              columnNumber: location.columnNumber - 1,
+              accessPattern: field_access_model.FieldAccessPattern.thisImplicit,
+              isImplicitThis: true,
+              inConstructor: _isInConstructor(),
+              inEqualityOperator: false,
+              inStringInterpolation: _stringInterpolationOffsets.contains(node.offset),
+            );
+
+            accesses.add(access);
+          }
+        }
+      }
+
+      // Skip further processing for function invocations
+      super.visitSimpleIdentifier(node);
+      return;
+    }
+
+    // Handle callable field pattern: field() where field has a call method
+    // Example: getRemoteFileUseCase('args') where getRemoteFileUseCase is a field
+    if (parent is MethodInvocation && parent.methodName == node) {
+      final element = node.element;
+
+      // Check if this is actually a field being invoked (callable field)
+      if (element is FieldElement || (element is PropertyAccessorElement && element.isSynthetic)) {
+        // This is a field with a call method - track as field read
+        Element? enclosingElement;
+
+        if (element is FieldElement) {
+          enclosingElement = element.enclosingElement;
+        } else if (element is PropertyAccessorElement) {
+          enclosingElement = element.variable.enclosingElement;
+        }
+
+        if (enclosingElement is InterfaceElement) {
+          final fieldName = node.name;
+          final declaringClassName = enclosingElement.name;
+
+          if (declaringClassName != null) {
+            final location = lineInfo.getLocation(node.offset);
+            final access = field_access_model.FieldAccess(
+              fieldName: fieldName,
+              declaringType: declaringClassName,
+              accessType: field_access_model.FieldAccessType.read,
+              filePath: filePath,
+              lineNumber: location.lineNumber,
+              columnNumber: location.columnNumber - 1,
+              accessPattern: field_access_model.FieldAccessPattern.thisImplicit,
+              isImplicitThis: true,
+              inConstructor: _isInConstructor(),
+              inEqualityOperator: false,
+              inStringInterpolation: _stringInterpolationOffsets.contains(node.offset),
+            );
+
+            accesses.add(access);
+          }
+        }
+      }
+
+      // Skip further processing for method invocations
+      super.visitSimpleIdentifier(node);
+      return;
+    }
+
+    // Handle field.method() pattern where field is the target of a method call
+    // Example: navigator.push() where navigator is a field
+    if (parent is MethodInvocation && parent.target == node) {
+      final element = node.element;
+
+      // Check if the target is a field
+      if (element is FieldElement || (element is PropertyAccessorElement && element.isSynthetic)) {
+        Element? enclosingElement;
+
+        if (element is FieldElement) {
+          enclosingElement = element.enclosingElement;
+        } else if (element is PropertyAccessorElement) {
+          enclosingElement = element.variable.enclosingElement;
+        }
+
+        if (enclosingElement is InterfaceElement) {
+          final fieldName = node.name;
+          final declaringClassName = enclosingElement.name;
+
+          if (declaringClassName != null) {
+            final location = lineInfo.getLocation(node.offset);
+            final access = field_access_model.FieldAccess(
+              fieldName: fieldName,
+              declaringType: declaringClassName,
+              accessType: field_access_model.FieldAccessType.read,
+              filePath: filePath,
+              lineNumber: location.lineNumber,
+              columnNumber: location.columnNumber - 1,
+              accessPattern: field_access_model.FieldAccessPattern.thisImplicit,
+              isImplicitThis: true,
+              inConstructor: _isInConstructor(),
+              inEqualityOperator: false,
+              inStringInterpolation: _stringInterpolationOffsets.contains(node.offset),
+            );
+
+            accesses.add(access);
+          }
+        }
+      }
+
+      // Skip further processing for method invocations where we're the target
+      super.visitSimpleIdentifier(node);
+      return;
+    }
+
+    // Skip if this is the callee in a function call expression
+    if (parent is FunctionExpressionInvocation) {
+      super.visitSimpleIdentifier(node);
+      return;
+    }
+
+    // Check if this could be a field access by checking element type
+    // For inherited fields, use the DECLARING class, not the enclosing class
+    final element = node.element;
+    String? declaringType;
+
+    if (element is PropertyAccessorElement && !element.isStatic) {
+      // This is a field/getter - get its declaring class
+      final declaringElement = element.enclosingElement;
+      if (declaringElement is ClassElement) {
+        declaringType = declaringElement.name;
+      } else if (declaringElement is MixinElement) {
+        declaringType = declaringElement.name;
+      }
+    }
+
+    // Fallback: check if we're inside a class/enum (for local fields)
+    if (declaringType == null) {
+      AstNode? current = node.parent;
+      while (current != null) {
+        if (current is ClassDeclaration) {
+          declaringType = current.name.lexeme;
+          break;
+        } else if (current is EnumDeclaration) {
+          declaringType = current.name.lexeme;
+          break;
+        } else if (current is ExtensionTypeDeclaration) {
+          declaringType = current.name.lexeme;
+          break;
+        }
+        current = current.parent;
+      }
+    }
+
+    // If we have a declaring type and this looks like it could be a field access
+    if (declaringType != null && element is PropertyAccessorElement) {
+      // Record as field access with implicit this
+      final location = lineInfo.getLocation(node.offset);
+      final isWrite = _isWriteContext(node);
+      final isRead = _isReadContext(node) || _isCompoundAssignment(node);
+
+      if (isRead || isWrite) {
+        final accessType = isRead && isWrite
+            ? field_access_model.FieldAccessType.readWrite
+            : isRead
+                ? field_access_model.FieldAccessType.read
+                : field_access_model.FieldAccessType.write;
+
+        final access = field_access_model.FieldAccess(
+          fieldName: node.name,
+          declaringType: declaringType,
+          accessType: accessType,
+          filePath: filePath,
+          lineNumber: location.lineNumber,
+          columnNumber: location.columnNumber - 1,
+          accessPattern: field_access_model.FieldAccessPattern.thisImplicit,
+          isImplicitThis: true,
+          inConstructor: _isInConstructor(),
+          inEqualityOperator: _isInEqualityOperator(node),
+          inStringInterpolation: _stringInterpolationOffsets.contains(node.offset),
+        );
+
+        accesses.add(access);
+      }
+    }
+    // Fallback: if element is null but we have declaringType (from enclosing class),
+    // assume it's a field access if it's in a write/compound assignment context
+    else if (declaringType != null && element == null) {
+      final isWrite = _isWriteContext(node);
+      final isCompound = _isCompoundAssignment(node);
+
+      // Only track if it's being written to or in compound assignment (likely a field)
+      if (isWrite || isCompound) {
+        final location = lineInfo.getLocation(node.offset);
+        final isRead = _isReadContext(node) || isCompound;
+        final accessType = isRead && isWrite
+            ? field_access_model.FieldAccessType.readWrite
+            : isRead
+                ? field_access_model.FieldAccessType.read
+                : field_access_model.FieldAccessType.write;
+
+        final access = field_access_model.FieldAccess(
+          fieldName: node.name,
+          declaringType: declaringType,
+          accessType: accessType,
+          filePath: filePath,
+          lineNumber: location.lineNumber,
+          columnNumber: location.columnNumber - 1,
+          accessPattern: field_access_model.FieldAccessPattern.thisImplicit,
+          isImplicitThis: true,
+          inConstructor: _isInConstructor(),
+          inEqualityOperator: _isInEqualityOperator(node),
+          inStringInterpolation: _stringInterpolationOffsets.contains(node.offset),
+        );
+
+        accesses.add(access);
+      }
+    }
+
+    super.visitSimpleIdentifier(node);
+  }
+
+  /// T017: Checks if field element belongs to enclosing class context
+  field_model.Visibility _resolveVisibility(String fieldName) {
+    return fieldName.startsWith('_') ? field_model.Visibility.private : field_model.Visibility.public;
+  }
+
+  List<String> _extractAnnotations(List<Annotation> metadata) {
+    return metadata.map((a) => a.name.name).toList();
+  }
+
+  bool _isWriteContext(AstNode node) {
+    final parent = node.parent;
+    if (parent is AssignmentExpression && parent.leftHandSide == node) {
+      return true;
+    }
+    if (parent is PostfixExpression || parent is PrefixExpression) {
+      return true;
+    }
+    return false;
+  }
+
+  bool _isReadContext(AstNode node) {
+    // A field is read if it's NOT in a pure write context
+    // Pure write: left side of simple assignment (=)
+    final parent = node.parent;
+
+    // If it's on the left side of a simple assignment, it's only written
+    if (parent is AssignmentExpression && parent.leftHandSide == node) {
+      // Check if it's a compound assignment (+=, -=, etc.)
+      return parent.operator.type.lexeme != '=';
+    }
+
+    // Everything else is a read (including reads in expressions)
+    return true;
+  }
+
+  bool _isCompoundAssignment(AstNode node) {
+    // T021: Compound assignments like += are both read and write
+    final parent = node.parent;
+    if (parent is AssignmentExpression && parent.leftHandSide == node) {
+      return parent.operator.type.lexeme != '=';
+    }
+    return false;
+  }
+
+  bool _isInConstructor() {
+    // This would require tracking current node context
+    // For now, we'll detect this during specific visitConstructorDeclaration
+    // TODO: Implement proper constructor context tracking in T020
+    return false;
+  }
+
+  bool _isInEqualityOperator(SimpleIdentifier identifier) {
+    // Traverse up to find if we're in operator== or hashCode
+    AstNode? current = identifier;
+    while (current != null) {
+      if (current is MethodDeclaration) {
+        return equalityOperatorTracker.isEqualityMethod(current);
+      }
+      current = current.parent;
+    }
+    return false;
+  }
+
+  @override
+  void visitSwitchStatement(SwitchStatement node) {
+    // T097: Track field access in switch pattern matching
+    // Pattern matching allows accessing fields of matched types
+    // Example: case LoadedState(): print(state.data);
+    super.visitSwitchStatement(node);
+  }
+
+  @override
+  void visitSwitchExpression(SwitchExpression node) {
+    // T097: Track field access in switch expressions (Dart 3.0+)
+    // Example: final result = switch (state) { LoadedState() => state.data };
+    super.visitSwitchExpression(node);
+  }
+
+  @override
+  void visitSwitchPatternCase(SwitchPatternCase node) {
+    // T097: Process switch pattern cases
+    // Field access can occur in guard expressions and case bodies
+    super.visitSwitchPatternCase(node);
+  }
+
+  @override
+  void visitStringInterpolation(StringInterpolation node) {
+    // T057: Track field references within string interpolation
+    final identifiers = stringInterpolationTracker.collectIdentifiers(node);
+    for (final identifier in identifiers) {
+      _stringInterpolationOffsets.add(identifier.offset);
+    }
+
+    super.visitStringInterpolation(node);
+  }
+}
+
 /// Result of analyzing a single file.
 class FileAnalysisResult {
   final String filePath;
@@ -2890,6 +5129,12 @@ class FileAnalysisResult {
   /// Variable references collected for unused-variable analysis (US1).
   final List<variable_ref.VariableReference> variableReferences;
 
+  /// Field declarations collected for unused-field analysis (T016).
+  final List<field_model.FieldDeclaration> fieldDeclarations;
+
+  /// Field accesses collected for unused-field analysis (T016).
+  final List<field_access_model.FieldAccess> fieldAccesses;
+
   FileAnalysisResult({
     required this.filePath,
     required this.declarations,
@@ -2899,8 +5144,12 @@ class FileAnalysisResult {
     List<invocation_model.MethodInvocation>? methodInvocations,
     List<variable_model.VariableDeclaration>? variableDeclarations,
     List<variable_ref.VariableReference>? variableReferences,
+    List<field_model.FieldDeclaration>? fieldDeclarations,
+    List<field_access_model.FieldAccess>? fieldAccesses,
   })  : methodDeclarations = methodDeclarations ?? [],
         methodInvocations = methodInvocations ?? [],
         variableDeclarations = variableDeclarations ?? [],
-        variableReferences = variableReferences ?? [];
+        variableReferences = variableReferences ?? [],
+        fieldDeclarations = fieldDeclarations ?? [],
+        fieldAccesses = fieldAccesses ?? [];
 }

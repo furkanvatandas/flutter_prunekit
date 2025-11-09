@@ -204,6 +204,6 @@ Examples:
 
   /// Gets the version string.
   static String getVersion() {
-    return 'flutter_prunekit version 2.2.1';
+    return 'flutter_dead_code version 2.4.0';
   }
 }
